@@ -52,7 +52,24 @@ PITCH = os.environ.get("TTS_PITCH", "+0Hz")
 
 OPENAI_MODEL = os.environ.get("OPENAI_TTS_MODEL", "tts-1")
 OPENAI_VOICE = os.environ.get("OPENAI_TTS_VOICE", "nova")
-OPENAI_SPEED = float(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
+
+
+def _parse_speed(raw: str) -> float:
+    # A bad value here would otherwise crash module import → launchd would loop
+    # restarts forever. Match the unknown-TTS_PROVIDER fallback below: log and
+    # use the safe default.
+    try:
+        return float(raw)
+    except ValueError:
+        print(
+            f"[tts] invalid OPENAI_TTS_SPEED={raw!r}, using 1.0",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1.0
+
+
+OPENAI_SPEED = _parse_speed(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
 
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
 
