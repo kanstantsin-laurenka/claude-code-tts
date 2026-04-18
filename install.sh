@@ -72,10 +72,51 @@ else
     say "settings.json created"
 fi
 
-# 6. Render launchd plist
+# 6. Render launchd plist (preserve user-set EnvironmentVariables across re-install)
+#
+# Re-running install.sh (directly or via `tts update`) used to stomp the whole
+# plist, wiping knobs that `tts provider|voice|rate|pitch|openai-*|speed|tldr`
+# had written to EnvironmentVariables. Users had to reconfigure everything
+# after each update. Now: capture existing EnvironmentVariables, render the
+# fresh template, then overlay captured values on top.
+#
+# PYTHONPATH and PATH are re-rendered from the template because they're
+# derived from $REPO_DIR — overlaying a stale value would break the server
+# if the repo had been moved.
 mkdir -p "$HOME/Library/LaunchAgents"
+
+preserved_env=""
+if [[ -f "$PLIST_TARGET" ]]; then
+    # jq -r with tab separator is safe here: none of our env values contain
+    # tabs (voices, rates, keys are all simple strings). Falls through to
+    # empty on malformed plist — template defaults then apply.
+    preserved_env=$(
+        plutil -convert json -o - "$PLIST_TARGET" 2>/dev/null \
+            | jq -r '(.EnvironmentVariables // {}) | to_entries[]
+                     | select(.key | IN("PYTHONPATH","PATH") | not)
+                     | "\(.key)\t\(.value)"' \
+            2>/dev/null || true
+    )
+fi
+
 sed "s|__REPO_DIR__|$REPO_DIR|g" "$PLIST_TEMPLATE" > "$PLIST_TARGET"
-say "plist: $PLIST_TARGET"
+
+if [[ -n "$preserved_env" ]]; then
+    overlaid=0
+    while IFS=$'\t' read -r env_key env_val; do
+        [[ -z "$env_key" ]] && continue
+        if /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:$env_key $env_val" "$PLIST_TARGET" 2>/dev/null; then
+            overlaid=$((overlaid + 1))
+        elif /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:$env_key string $env_val" "$PLIST_TARGET" 2>/dev/null; then
+            overlaid=$((overlaid + 1))
+        else
+            warn "could not preserve $env_key — left at template default"
+        fi
+    done <<< "$preserved_env"
+    say "plist: $PLIST_TARGET (preserved $overlaid user-set env var(s))"
+else
+    say "plist: $PLIST_TARGET"
+fi
 
 # 7. Remove legacy launchd agent (if any)
 if launchctl print "${DOMAIN}/${OLD_LABEL}" >/dev/null 2>&1; then
