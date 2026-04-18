@@ -29,10 +29,17 @@ from claude_code_tts.clean_text import TRUNCATION_SUFFIX, clean_for_tts
         ("empty", "", ""),
         ("whitespace only", "   \n\n  ", ""),
         ("tilde fenced", "~~~js\nx = 1\n~~~\nend", "end"),
+        ("image ref dropped", "См. ![картинка](pic.png) тут", "См. тут"),
+        ("nested inline", "**жир `код` внутри**", "жир код внутри"),
+        ("mixed structure", "# Заголовок\n- раз\n- два\nконец", "Заголовок раз два конец"),
     ],
 )
 def test_cases(name, raw, expected):
     assert clean_for_tts(raw) == expected
+
+
+def test_none_input_returns_empty_string():
+    assert clean_for_tts(None) == ""  # type: ignore[arg-type]
 
 
 def test_truncation_adds_suffix():

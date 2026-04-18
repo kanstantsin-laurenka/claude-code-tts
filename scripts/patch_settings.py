@@ -13,6 +13,7 @@ Usage:
   patch_settings.py install --repo-dir /abs/path/to/claude-code-tts
   patch_settings.py uninstall --repo-dir /abs/path/to/claude-code-tts
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,6 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-
 
 LEGACY_MARKER = "/.claude/skills/tts/"
 STOP_TIMEOUT_MS = 5000
@@ -109,14 +109,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("action", choices=["install", "uninstall"])
     p.add_argument("--repo-dir", required=True, help="Absolute path to claude-code-tts repo")
     p.add_argument("--settings", default=str(Path.home() / ".claude" / "settings.json"))
-    p.add_argument("--backup", action="store_true", help="Save settings.json.bak-<ts> before writing")
+    p.add_argument(
+        "--backup", action="store_true", help="Save settings.json.bak-<ts> before writing"
+    )
     args = p.parse_args(argv)
 
     repo_dir = os.path.abspath(args.repo_dir)
     settings_path = Path(args.settings).expanduser()
 
     if settings_path.exists():
-        with open(settings_path, "r", encoding="utf-8") as f:
+        with open(settings_path, encoding="utf-8") as f:
             settings = json.load(f)
     else:
         settings_path.parent.mkdir(parents=True, exist_ok=True)

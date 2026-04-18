@@ -14,8 +14,8 @@ Rules applied in order:
   7. Collapse whitespace.
   8. Truncate to max_chars with a spoken "ответ сокращён" marker.
 """
-import re
 
+import re
 
 TRUNCATION_SUFFIX = "… ответ сокращён."
 

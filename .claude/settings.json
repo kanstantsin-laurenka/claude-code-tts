@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; case \"$f\" in *.py) ;; *) exit 0 ;; esac; d=$(dirname \"$f\"); while [ \"$d\" != \"/\" ]; do if [ -x \"$d/venv/bin/ruff\" ]; then \"$d/venv/bin/ruff\" format \"$f\"; exit 0; fi; d=$(dirname \"$d\"); done; command -v ruff >/dev/null && ruff format \"$f\"; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
