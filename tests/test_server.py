@@ -1,7 +1,8 @@
 """
-Server tests — mock edge_tts.Communicate and afplay so tests don't need network
-or audio output. A fresh ThreadingHTTPServer is spun per-test on a random port
-to avoid interference with the live launchd-managed server on 7852.
+Server tests — mock providers (edge-tts or openai) and afplay so tests don't
+need network or audio output. A fresh ThreadingHTTPServer is spun per-test on
+a random port to avoid interference with the live launchd-managed server on
+7852.
 """
 
 import importlib
@@ -21,31 +22,21 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-def server(monkeypatch, tmp_path):
-    """Spin up a fresh server module with edge_tts + afplay stubbed out."""
-    port = _free_port()
-    lock_file = tmp_path / "nl-recording.lock"
+class _FakeEdgeCommunicate:
+    def __init__(self, *a, **kw):
+        pass
 
-    monkeypatch.setenv("TTS_PORT", str(port))
-    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
-    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    async def save(self, path):
+        Path(path).write_bytes(b"\x00")
 
-    # Ensure fresh module read picks up env vars.
-    import claude_code_tts.server as srv
 
-    importlib.reload(srv)
+def _patch_edge(monkeypatch):
+    import claude_code_tts.providers.edge as edge_mod
 
-    class FakeCommunicate:
-        def __init__(self, *a, **kw):
-            pass
+    monkeypatch.setattr(edge_mod.edge_tts, "Communicate", _FakeEdgeCommunicate)
 
-        async def save(self, path):
-            Path(path).write_bytes(b"\x00")  # empty MP3 placeholder
 
-    monkeypatch.setattr(srv.edge_tts, "Communicate", FakeCommunicate)
-
-    # afplay → `true` so we don't make noise and Popen exits immediately.
+def _patch_afplay(monkeypatch, srv):
     _orig_popen = srv.subprocess.Popen
 
     def _fake_popen(args, **kw):
@@ -55,12 +46,124 @@ def server(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv.subprocess, "Popen", _fake_popen)
 
+
+@pytest.fixture
+def server(monkeypatch, tmp_path):
+    """Fresh server with edge-tts provider (the default) + afplay stubbed out."""
+    port = _free_port()
+    lock_file = tmp_path / "nl-recording.lock"
+
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    _patch_edge(monkeypatch)
+    _patch_afplay(monkeypatch, srv)
+
     httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
 
     try:
         yield {"port": port, "lock_file": lock_file, "srv": srv}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.fixture
+def openai_server(monkeypatch, tmp_path):
+    """Fresh server with provider=openai, mocked AsyncOpenAI, fake Keychain key."""
+    port = _free_port()
+    lock_file = tmp_path / "nl-recording.lock"
+
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    monkeypatch.setenv("TTS_PROVIDER", "openai")
+
+    import claude_code_tts.keychain as keychain_mod
+
+    monkeypatch.setattr(keychain_mod, "get_openai_key", lambda: "sk-test-dummy")
+
+    # Stub AsyncOpenAI on the providers.openai module before server reload uses it.
+    import claude_code_tts.providers.openai as openai_provider
+
+    class _FakeStreamingResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def stream_to_file(self, path):
+            Path(path).write_bytes(b"\x00")
+
+    class _FakeStreamCtx:
+        def create(self, **kw):
+            return _FakeStreamingResponse()
+
+    class _FakeSpeech:
+        def __init__(self):
+            self.with_streaming_response = _FakeStreamCtx()
+
+    class _FakeAudio:
+        def __init__(self):
+            self.speech = _FakeSpeech()
+
+    class _FakeAsyncOpenAI:
+        def __init__(self, *a, **kw):
+            self.audio = _FakeAudio()
+
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", _FakeAsyncOpenAI)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+    _patch_afplay(monkeypatch, srv)
+
+    httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield {"port": port, "srv": srv}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.fixture
+def openai_server_no_key(monkeypatch, tmp_path):
+    """Provider=openai but Keychain has no key — synthesize must fail cleanly."""
+    port = _free_port()
+    lock_file = tmp_path / "nl-recording.lock"
+
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    monkeypatch.setenv("TTS_PROVIDER", "openai")
+
+    import claude_code_tts.keychain as keychain_mod
+
+    monkeypatch.setattr(keychain_mod, "get_openai_key", lambda: None)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+    _patch_afplay(monkeypatch, srv)
+
+    httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield {"port": port, "srv": srv}
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -85,7 +188,8 @@ def test_health_endpoint(server):
     assert status == 200
     data = json.loads(body)
     assert data["ok"] is True
-    assert "voice" in data
+    assert data["config"]["provider"] == "edge-tts"
+    assert "voice" in data["config"]
     assert data["locked"] is False
 
 
@@ -93,7 +197,6 @@ def test_speak_with_mocked_edge_tts(server):
     status, body = _request(server["port"], "POST", "/speak", {"text": "Привет"})
     assert status == 202
     assert json.loads(body)["queued"] is True
-    # give fake popen a moment to exit
     time.sleep(0.1)
 
 
@@ -147,3 +250,30 @@ def test_empty_body_returns_400(server):
 def test_unknown_path_returns_404(server):
     status, _ = _request(server["port"], "GET", "/nope")
     assert status == 404
+
+
+def test_openai_provider_health(openai_server):
+    status, body = _request(openai_server["port"], "GET", "/health")
+    assert status == 200
+    data = json.loads(body)
+    cfg = data["config"]
+    assert cfg["provider"] == "openai"
+    assert cfg["model"] == "tts-1"
+    assert cfg["voice"] == "nova"
+    assert cfg["key_loaded"] is True
+    # Key itself must never leak into /health.
+    assert "api_key" not in cfg
+    assert "sk-" not in body.decode()
+
+
+def test_openai_provider_speak_ok(openai_server):
+    status, body = _request(openai_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 202
+    assert json.loads(body)["queued"] is True
+    time.sleep(0.1)
+
+
+def test_openai_provider_missing_key_returns_502(openai_server_no_key):
+    status, body = _request(openai_server_no_key["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 502
+    assert "key" in json.loads(body)["error"].lower()
