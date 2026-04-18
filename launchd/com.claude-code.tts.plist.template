@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-code.tts</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO_DIR__/venv/bin/python</string>
+        <string>-m</string>
+        <string>claude_code_tts.server</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__REPO_DIR__/src</string>
+        <key>TTS_VOICE</key>
+        <string>ru-RU-SvetlanaNeural</string>
+        <key>TTS_RATE</key>
+        <string>+0%</string>
+        <key>TTS_PITCH</key>
+        <string>+0Hz</string>
+        <key>TTS_MAX_CHARS</key>
+        <string>1500</string>
+        <key>TTS_PORT</key>
+        <string>7852</string>
+        <key>TTS_LOCK_FILE</key>
+        <string>/tmp/nl-recording.lock</string>
+        <key>TTS_RESPECT_LOCK</key>
+        <string>1</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_DIR__/logs/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO_DIR__/logs/server.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

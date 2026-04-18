@@ -1,0 +1,246 @@
+#!/bin/bash
+# Claude Code TTS control CLI.
+# Subcommands: on | off | toggle | status | test | restart | install | uninstall | logs | voice | rate | pitch | voices
+set -euo pipefail
+
+# Resolve symlinks so the CLI works when invoked via ~/.local/bin/tts too.
+_self="$0"
+while [[ -L "$_self" ]]; do
+    _link="$(readlink "$_self")"
+    if [[ "$_link" = /* ]]; then
+        _self="$_link"
+    else
+        _self="$(cd "$(dirname "$_self")" && cd "$(dirname "$_link")" && pwd)/$(basename "$_link")"
+    fi
+done
+REPO_DIR="$(cd "$(dirname "$_self")/.." && pwd)"
+TTS_FLAG="$HOME/.config/claude-code-tts/enabled"
+TTS_PORT="${TTS_PORT:-7852}"
+AGENT_LABEL="com.claude-code.tts"
+PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
+UID_NUM="$(id -u)"
+DOMAIN="gui/${UID_NUM}"
+SERVICE="${DOMAIN}/${AGENT_LABEL}"
+
+mkdir -p "$(dirname "$TTS_FLAG")"
+
+have_agent() {
+  launchctl print "$SERVICE" >/dev/null 2>&1
+}
+agent_running() {
+  launchctl print "$SERVICE" 2>/dev/null | grep -q 'state = running'
+}
+health_ok() {
+  curl -sf --max-time 1 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1
+}
+
+ensure_agent_loaded() {
+  if ! have_agent; then
+    if [[ -f "$PLIST" ]]; then
+      launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null || true
+    else
+      echo "error: launchd plist missing at $PLIST — run: tts install" >&2
+      return 1
+    fi
+  fi
+}
+
+cmd_on() {
+  echo 1 > "$TTS_FLAG"
+  ensure_agent_loaded
+  if ! agent_running; then
+    launchctl kickstart -k "$SERVICE" >/dev/null 2>&1 || true
+  fi
+  for _ in 1 2 3 4 5 6; do
+    if health_ok; then
+      echo "TTS: on (server healthy on :$TTS_PORT)"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "TTS: enabled, but server not responding on :$TTS_PORT yet — check: tts logs" >&2
+}
+
+cmd_off() {
+  echo 0 > "$TTS_FLAG"
+  curl -sf --max-time 1 -X POST "http://127.0.0.1:${TTS_PORT}/stop" >/dev/null 2>&1 || true
+  echo "TTS: off (server left running; it's idle)"
+}
+
+cmd_toggle() {
+  if [[ -f "$TTS_FLAG" ]] && [[ "$(cat "$TTS_FLAG")" == "1" ]]; then
+    cmd_off
+  else
+    cmd_on
+  fi
+}
+
+cmd_status() {
+  local enabled="no"
+  [[ -f "$TTS_FLAG" ]] && [[ "$(cat "$TTS_FLAG")" == "1" ]] && enabled="yes"
+  echo "enabled: $enabled"
+  echo "flag:    $TTS_FLAG"
+  echo "repo:    $REPO_DIR"
+  if health_ok; then
+    local info
+    info=$(curl -sf --max-time 1 "http://127.0.0.1:${TTS_PORT}/health")
+    echo "server:  running ($info)"
+    local locked
+    locked=$(echo "$info" | jq -r '.locked // false')
+    if [[ "$locked" == "true" ]]; then
+      echo "lock:    ACTIVE (microphone recording — TTS suppressed)"
+    fi
+  else
+    echo "server:  down"
+  fi
+  if have_agent; then
+    local state
+    state=$(launchctl print "$SERVICE" 2>/dev/null | awk -F' = ' '/state =/{print $2; exit}')
+    echo "launchd: loaded (state=${state:-unknown})"
+  else
+    echo "launchd: not loaded"
+  fi
+}
+
+cmd_test() {
+  local text="${1:-Привет. Это проверка голоса. Если ты это слышишь, всё работает.}"
+  if ! health_ok; then
+    echo "server is down — starting..." >&2
+    cmd_on || true
+  fi
+  curl -sf --max-time 5 -X POST "http://127.0.0.1:${TTS_PORT}/speak" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg t "$text" '{text:$t}')" || {
+      echo "speak failed" >&2
+      return 1
+    }
+  echo
+}
+
+cmd_restart() {
+  ensure_agent_loaded
+  launchctl kickstart -k "$SERVICE" >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6; do
+    if health_ok; then
+      echo "restarted"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "restart: server not responding yet — check: tts logs" >&2
+}
+
+cmd_install() {
+  bash "$REPO_DIR/install.sh"
+}
+
+cmd_uninstall() {
+  bash "$REPO_DIR/uninstall.sh" "$@"
+}
+
+cmd_logs() {
+  local log="$REPO_DIR/logs/server.log"
+  if [[ ! -f "$log" ]]; then
+    echo "no logs yet at $log"
+    return 0
+  fi
+  tail -n 50 -f "$log"
+}
+
+_update_env() {
+  local key="$1" value="$2"
+  if [[ ! -f "$PLIST" ]]; then
+    echo "error: plist missing, run: tts install" >&2
+    return 1
+  fi
+  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:$key $value" "$PLIST" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:$key string $value" "$PLIST"
+  launchctl bootout "$DOMAIN" "$PLIST" 2>/dev/null || true
+  launchctl bootstrap "$DOMAIN" "$PLIST"
+  for _ in 1 2 3 4 5 6; do
+    if health_ok; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "set $key=$value, but server not responding yet — check: tts logs" >&2
+  return 1
+}
+
+cmd_voice() {
+  local name="${1:?usage: tts voice <voice-name> (e.g. ru-RU-SvetlanaNeural, ru-RU-DmitryNeural, en-US-AriaNeural)}"
+  _update_env TTS_VOICE "$name" && echo "voice: $name (server restarted)"
+}
+
+cmd_rate() {
+  local value="${1:?usage: tts rate <value>  (e.g. +0%, +15%, -10%)}"
+  if [[ ! "$value" =~ ^[+-][0-9]+%$ ]]; then
+    echo "error: rate must look like +15% or -10%" >&2
+    return 2
+  fi
+  _update_env TTS_RATE "$value" && echo "rate: $value (server restarted)"
+}
+
+cmd_pitch() {
+  local value="${1:?usage: tts pitch <value>  (e.g. +0Hz, +50Hz, -20Hz)}"
+  if [[ ! "$value" =~ ^[+-][0-9]+Hz$ ]]; then
+    echo "error: pitch must look like +50Hz or -20Hz" >&2
+    return 2
+  fi
+  _update_env TTS_PITCH "$value" && echo "pitch: $value (server restarted)"
+}
+
+cmd_voices() {
+  local py="$REPO_DIR/venv/bin/python"
+  if [[ ! -x "$py" ]]; then
+    echo "venv missing — run: tts install" >&2
+    return 1
+  fi
+  "$py" -c 'import asyncio, edge_tts; voices = asyncio.run(edge_tts.list_voices()); [print(v["ShortName"], "—", v.get("Gender",""), v.get("Locale","")) for v in voices if v["Locale"].startswith(("ru","en"))]'
+}
+
+usage() {
+  cat <<EOF
+Usage: tts <command>
+
+  on              Enable TTS and (re)start the server
+  off             Disable TTS and stop current playback
+  toggle          Toggle on/off
+  status          Show enabled flag + server + launchd state
+  test [text]     Synthesize and play a phrase (default: greeting)
+  restart         Kick the launchd agent to restart the server
+  install         Run installer (creates venv, installs plist, patches settings.json)
+  uninstall       Run uninstaller (reverse of install; pass --purge to wipe state/venv too)
+  logs            Tail server log
+  voice <name>    Switch voice (e.g. ru-RU-DmitryNeural) and restart
+  rate <val>      Set speech rate (e.g. +15%, -10%) and restart
+  pitch <val>     Set pitch (e.g. +50Hz, -20Hz) and restart
+  voices          List available ru/en voices from edge-tts
+
+Files:
+  flag:    $TTS_FLAG
+  repo:    $REPO_DIR
+  plist:   $PLIST
+  logs:    $REPO_DIR/logs/server.log
+EOF
+}
+
+cmd="${1:-status}"
+shift || true
+case "$cmd" in
+  on)        cmd_on "$@" ;;
+  off)       cmd_off "$@" ;;
+  toggle)    cmd_toggle "$@" ;;
+  status)    cmd_status "$@" ;;
+  test)      cmd_test "$@" ;;
+  restart)   cmd_restart "$@" ;;
+  install)   cmd_install "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  logs)      cmd_logs "$@" ;;
+  voice)     cmd_voice "$@" ;;
+  rate)      cmd_rate "$@" ;;
+  pitch)     cmd_pitch "$@" ;;
+  voices)    cmd_voices "$@" ;;
+  -h|--help|help) usage ;;
+  *) echo "unknown command: $cmd" >&2; usage; exit 2 ;;
+esac

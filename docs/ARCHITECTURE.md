@@ -1,0 +1,70 @@
+# Architecture
+
+## Data flow
+
+```
+Claude Code assistant message complete
+    │
+    ▼
+~/.claude/settings.json  Stop hook
+    → bash <repo>/hooks/tts-stop.sh
+    │ stdin JSON: {"last_assistant_message": "...", ...}
+    ▼
+hooks/tts-stop.sh  (20 lines)
+    1. check ~/.config/claude-code-tts/enabled == "1"
+    2. curl /health on 127.0.0.1:7852
+    3. extract .last_assistant_message via jq
+    4. curl -X POST /speak {"text": ...}  (backgrounded, non-blocking)
+    │ HTTP
+    ▼
+src/claude_code_tts/server.py  (launchd agent com.claude-code.tts)
+    1. clean_for_tts(text)  — strip markdown/code
+    2. if /tmp/nl-recording.lock exists → return 423 (skip playback)
+    3. edge-tts → temp MP3
+    4. SIGTERM previous afplay → start new afplay
+    │
+    ▼
+macOS audio output
+```
+
+SessionStart hook (`hooks/tts-status.sh`) runs once per Claude Code session and prints one line showing whether the server is healthy.
+
+## Why a Stop hook and not a skill
+
+Claude Code skills (`~/.claude/skills/<name>/SKILL.md`) are on-demand slash-commands invoked by either the user (`/<name>`) or the model. They are **not** triggered automatically by session lifecycle events.
+
+Stop hooks **are** — Claude Code executes them every time the assistant stops producing text, and passes the full last assistant message on stdin. This is the only mechanism that gives us automatic playback of every response without any per-turn user action.
+
+## Why an HTTP server instead of direct invocation
+
+An alternative design would be for the hook to invoke `edge-tts` + `afplay` directly. The server exists because:
+
+- **Overlap prevention.** Two Stop events can fire close together (rare but possible). The server maintains a single-playback invariant by SIGTERMing the previous `afplay` before starting a new one.
+- **Playback interruption control.** `/stop` lets `tts off` and the lock-file-check stop what's currently playing.
+- **Startup cost amortization.** Python + edge-tts import is ~0.3s cold. A persistent server pays this cost once at login (launchd) instead of on every response.
+- **State inspection.** `/health` gives an externally-queryable status; `tts status` and the SessionStart hook use it.
+
+## Lock-file coordination
+
+Hammerspoon in the TTS2 (speech-to-text) project writes `/tmp/nl-recording.lock` while the microphone is recording. Our server checks for this file **twice** in the `/speak` path:
+
+1. Before calling edge-tts — fast skip.
+2. After synthesis, before starting afplay — catches the race where the user started recording during the ~1s synthesis window.
+
+Without this, Claude Code's voice response would play into the microphone and end up transcribed back into the next prompt.
+
+## File locations after install
+
+| Path | Role | Managed by |
+|---|---|---|
+| `<repo>/` | Source, CLI, scripts | git |
+| `<repo>/venv/` | Python venv with edge-tts | install.sh |
+| `<repo>/logs/server.log` | launchd stdout+stderr | launchd |
+| `~/.config/claude-code-tts/enabled` | `0`/`1` flag | user (via `tts on/off`) |
+| `~/.claude/settings.json` | Hook registration | patch_settings.py |
+| `~/Library/LaunchAgents/com.claude-code.tts.plist` | launchd agent | install.sh |
+| `~/.local/bin/tts` | Symlink to `<repo>/bin/tts` | install.sh |
+
+## Hook idempotency
+
+`scripts/patch_settings.py` treats a hook as "ours" if its `command` string contains the current repo path **or** the legacy `/.claude/skills/tts/`. On install, any matching hook is removed first and then fresh ones are added. This makes re-install, migration, and repo relocation safe.
