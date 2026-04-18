@@ -217,6 +217,22 @@ cmd_voices() {
   "$py" -c 'import asyncio, edge_tts; voices = asyncio.run(edge_tts.list_voices()); [print(v["ShortName"], "—", v.get("Gender",""), v.get("Locale","")) for v in voices if v["Locale"].startswith(("ru","en"))]'
 }
 
+# Print a one-line hint if the Keychain OpenAI key is missing or obviously
+# malformed. Returns non-zero so callers can gate follow-up output on it.
+_warn_openai_key_unusable() {
+  if ! security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
+    echo "! no OpenAI API key in Keychain — run: tts openai-key" >&2
+    return 1
+  fi
+  local stored
+  stored=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" -w 2>/dev/null || echo "")
+  if [[ "$stored" != sk-* ]] || [[ "${#stored}" -lt 40 ]]; then
+    echo "! stored OpenAI key looks malformed (expected sk-... 40+ chars) — re-run: tts openai-key" >&2
+    return 1
+  fi
+  return 0
+}
+
 cmd_provider() {
   local name="${1:?usage: tts provider <edge-tts|openai>}"
   case "$name" in
@@ -224,6 +240,11 @@ cmd_provider() {
     *) echo "error: provider must be 'edge-tts' or 'openai'" >&2; return 2 ;;
   esac
   _update_env TTS_PROVIDER "$name" && echo "provider: $name (server restarted)"
+  # Nudge the user if they switched to openai without a usable key — otherwise
+  # the next /speak just 401s and the only trace is logs/server.log.
+  if [[ "$name" == "openai" ]]; then
+    _warn_openai_key_unusable || true
+  fi
 }
 
 _validate_openai_key() {
