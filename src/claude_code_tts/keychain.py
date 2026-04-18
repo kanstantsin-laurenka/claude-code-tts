@@ -30,19 +30,17 @@ def get_openai_key() -> str | None:
 
 
 def set_openai_key(key: str) -> None:
-    """Store or update the OpenAI key. -U replaces an existing entry."""
+    """Store or update the OpenAI key. -U replaces an existing entry.
+
+    Key is fed via stdin (trailing -w with no value) to keep it out of argv —
+    otherwise any same-UID process can read it from `ps` while `security` runs.
+    """
+    # INVARIANT: capture_output=True — security echoes the -w value back on
+    # error; dropping this would leak the key into our stderr/logs.
     subprocess.run(
-        [
-            "security",
-            "add-generic-password",
-            "-U",
-            "-s",
-            SERVICE,
-            "-a",
-            ACCOUNT_OPENAI,
-            "-w",
-            key,
-        ],
+        ["security", "add-generic-password", "-U", "-s", SERVICE, "-a", ACCOUNT_OPENAI, "-w"],
+        input=key,
+        text=True,
         check=True,
         capture_output=True,
     )
