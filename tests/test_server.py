@@ -277,3 +277,28 @@ def test_openai_provider_missing_key_returns_502(openai_server_no_key):
     status, body = _request(openai_server_no_key["port"], "POST", "/speak", {"text": "Привет"})
     assert status == 502
     assert "key" in json.loads(body)["error"].lower()
+
+
+def test_unknown_provider_falls_back_to_edge(monkeypatch):
+    """Typo in TTS_PROVIDER must not brick the server — fall back to edge-tts."""
+    monkeypatch.setenv("TTS_PROVIDER", "garbage")
+    monkeypatch.setenv("TTS_PORT", str(_free_port()))
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    assert srv.PROVIDER.name == "edge-tts"
+
+
+def test_invalid_speed_does_not_crash_server(monkeypatch):
+    """A malformed OPENAI_TTS_SPEED env must be tolerated; server uses 1.0."""
+    monkeypatch.setenv("OPENAI_TTS_SPEED", "not-a-number")
+    monkeypatch.setenv("TTS_PORT", str(_free_port()))
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    assert srv.OPENAI_SPEED == 1.0

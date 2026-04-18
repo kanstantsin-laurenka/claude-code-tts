@@ -74,11 +74,18 @@ def test_openai_describe_includes_config_not_key():
     assert "sk-secret" not in repr(d)
 
 
-def test_openai_speed_clamped():
+def test_openai_speed_clamped(capsys):
     lo = OpenAIProvider(model="tts-1", voice="nova", speed=0.01, api_key="k")
     hi = OpenAIProvider(model="tts-1", voice="nova", speed=99.0, api_key="k")
     assert lo.speed == SPEED_MIN
     assert hi.speed == SPEED_MAX
+    err = capsys.readouterr().err
+    assert err.count("clamped to") == 2
+
+
+def test_openai_speed_in_range_no_log(capsys):
+    OpenAIProvider(model="tts-1", voice="nova", speed=1.25, api_key="k")
+    assert "clamped" not in capsys.readouterr().err
 
 
 def test_openai_missing_key_marks_not_loaded():
