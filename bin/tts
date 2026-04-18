@@ -107,7 +107,12 @@ cmd_status() {
 }
 
 cmd_test() {
-  local text="${1:-Привет. Это проверка голоса. Если ты это слышишь, всё работает.}"
+  # Default payload must include a TL;DR block — otherwise it silently returns 204
+  # when TTS_TLDR_ONLY=1 (the default) and users think the test failed.
+  local text="${1:-Это проверка голоса. Сейчас прозвучит только блок TL;DR.
+
+## TL;DR
+Всё работает.}"
   if ! health_ok; then
     echo "server is down — starting..." >&2
     cmd_on || true
