@@ -1,5 +1,7 @@
 # claude-code-tts
 
+[![test](https://github.com/kanstantsin-laurenka/claude-code-tts/actions/workflows/test.yml/badge.svg)](https://github.com/kanstantsin-laurenka/claude-code-tts/actions/workflows/test.yml)
+
 Speak Claude Code's responses aloud on macOS using Microsoft's free neural voices via [edge-tts](https://github.com/rany2/edge-tts). Zero cloud keys, zero paid APIs.
 
 ```
