@@ -7,6 +7,10 @@ TTS provider (edge-tts by default, OpenAI optional).
 Business rules:
   - Only ever one afplay process alive: a new /speak SIGTERMs the previous
     playback so rapid back-to-back responses don't overlap.
+  - When TTS_TLDR_ONLY=1 (default), only the text after the last "TL;DR"
+    marker is synthesized; if the message has no TL;DR the server stays
+    silent (returns 204). This trains the assistant-side workflow to always
+    emit a short summary block.
   - Text is sanitized via clean_text.clean_for_tts before synthesis so code
     blocks and markdown do not reach the voice model.
   - If TTS_LOCK_FILE exists (/tmp/nl-recording.lock by default) the server
@@ -36,7 +40,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import keychain
-from .clean_text import clean_for_tts
+from .clean_text import clean_for_tts, extract_tldr
 from .providers import ProviderError, TTSProvider
 from .providers.edge import EdgeTTSProvider
 from .providers.openai import OpenAIProvider
@@ -72,6 +76,8 @@ def _parse_speed(raw: str) -> float:
 OPENAI_SPEED = _parse_speed(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
 
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
+
+TLDR_ONLY = os.environ.get("TTS_TLDR_ONLY", "1") == "1"
 
 LOCK_FILE = os.environ.get("TTS_LOCK_FILE", "/tmp/nl-recording.lock")
 RESPECT_LOCK = os.environ.get("TTS_RESPECT_LOCK", "1") == "1"
@@ -136,7 +142,16 @@ def _stop_current() -> None:
 
 
 def _speak(text: str) -> tuple[int, str]:
-    cleaned = clean_for_tts(text, max_chars=MAX_CHARS)
+    if TLDR_ONLY:
+        tldr = extract_tldr(text)
+        if tldr is None:
+            log(f"no TL;DR block found; skipping playback (TTS_TLDR_ONLY=1); preview={text[:80]!r}")
+            return 204, ""
+        body_to_speak = tldr
+    else:
+        body_to_speak = text
+
+    cleaned = clean_for_tts(body_to_speak, max_chars=MAX_CHARS)
     if not cleaned:
         return 204, ""
 
@@ -208,6 +223,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "config": PROVIDER.describe(),
+                    "tldr_only": TLDR_ONLY,
                     "lock_file": LOCK_FILE,
                     "respect_lock": RESPECT_LOCK,
                     "locked": _is_locked(),

@@ -70,6 +70,7 @@ tts restart
 
 | Variable | Default | Notes |
 |---|---|---|
+| `TTS_TLDR_ONLY` | `1` | When `1`, the server speaks only the text after the last `TL;DR` marker. If the message has no marker the server stays silent. Toggle with `tts tldr on/off`. |
 | `TTS_MAX_CHARS` | `1500` | Soft limit ~10 s of speech; exceeded text gets a spoken "ответ сокращён" suffix |
 | `TTS_PORT` | `7852` | Change only if 7852 is busy on your machine |
 | `TTS_LOCK_FILE` | `/tmp/nl-recording.lock` | File whose presence suppresses playback |
@@ -87,6 +88,21 @@ tts openai-voice nova           # openai: warm female
 ```
 
 edge-tts full list (hundreds of locales): run `tts voices` without filters, or see [edge-tts voice samples](https://tts.travisvn.com/).
+
+## TL;DR-only mode
+
+> ⚠️ **Breaking change (introduced with `TTS_TLDR_ONLY`):** before this change the server always synthesized the entire assistant reply. Now the default is `TTS_TLDR_ONLY=1`, meaning the server stays silent for any reply that does not contain a TL;DR block. If you want the old "speak everything" behavior, run `tts tldr off` once after updating — the setting is persisted in the launchd plist.
+
+Default behavior: the server speaks **only the TL;DR block** at the end of an assistant message. Anything before the last line matching one of `## TL;DR`, `**TL;DR**`, `TL;DR:`, or bare `TL;DR` (case-insensitive, at line start) is dropped before synthesis. Fenced code blocks are stripped before the marker search, so an example TL;DR inside a `` ``` `` block does not trigger a match. Asymmetric markdown like `*TL;DR*`, `*TL;DR`, or `TL;DR**` is **not** treated as a marker. If no marker is found, the server is silent (HTTP 204) and logs a short preview of the rejected text so you can trace why nothing was spoken.
+
+This keeps playback short — assistant-side workflow is expected to always emit a concise summary block at the end. Toggle off to restore the old "speak the whole message" behavior:
+
+```bash
+tts tldr off     # speak the full message
+tts tldr on      # speak only TL;DR (default)
+```
+
+Running `tts tldr on` when it is already on (or `off` when already off) is a no-op — the CLI prints `tldr-only: already <mode> (no change)` and does not restart the launchd agent, so active playback is never interrupted.
 
 ## Enabled flag
 

@@ -48,6 +48,7 @@ tts logs            tail -f server log
 tts voice <name>    Switch voice (e.g. ru-RU-DmitryNeural, en-US-AriaNeural)
 tts rate <val>      Set speech rate (e.g. +15%, -10%)
 tts pitch <val>     Set pitch (e.g. +50Hz, -20Hz)
+tts tldr <on|off>   Speak only TL;DR block, silent if absent (default: on)
 tts reset           Restore voice/rate/pitch to defaults (single restart)
 tts config          Print current env values from the plist
 tts voices          List ru/en voices from edge-tts
@@ -74,6 +75,7 @@ All runtime parameters come from environment variables set in the launchd plist.
 | `TTS_VOICE` | `ru-RU-SvetlanaNeural` | edge-tts voice id |
 | `TTS_RATE` | `+0%` | Speech rate delta |
 | `TTS_PITCH` | `+0Hz` | Pitch delta |
+| `TTS_TLDR_ONLY` | `1` | Speak only the trailing `TL;DR` block; silent if absent. `tts tldr off` to restore full-message playback |
 | `TTS_MAX_CHARS` | `1500` | Truncate long responses before synthesis |
 | `TTS_PORT` | `7852` | Local HTTP server port |
 | `TTS_LOCK_FILE` | `/tmp/nl-recording.lock` | If this file exists, suppress playback |
@@ -87,6 +89,8 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for details and [docs/ARCHITE
 ```bash
 tts update       # git pull --rebase, then install.sh
 ```
+
+> ⚠️ **Heads-up when upgrading to the TL;DR-only release:** by default the server now speaks only the `TL;DR` block at the end of an assistant message and stays silent when that block is missing. If you prefer the previous "speak the whole message" behavior, run `tts tldr off` once after upgrading.
 
 ## Development
 

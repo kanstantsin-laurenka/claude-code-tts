@@ -296,6 +296,54 @@ cmd_reset() {
   _reload_agent && echo "reset: voice=ru-RU-SvetlanaNeural, rate=+0%, pitch=+0Hz (edge-tts knobs only)"
 }
 
+cmd_tldr() {
+  local mode="${1:?usage: tts tldr <on|off>}"
+  local want
+  case "$mode" in
+    on)  want="1" ;;
+    off) want="0" ;;
+    *)   echo "usage: tts tldr <on|off>" >&2; return 2 ;;
+  esac
+
+  # Skip the launchd bootout+bootstrap if the flag is already set to the
+  # requested value — re-loading needlessly would interrupt active playback.
+  if [[ -f "$PLIST" ]]; then
+    local current
+    current=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:TTS_TLDR_ONLY" "$PLIST" 2>/dev/null || echo "")
+    if [[ "$current" == "$want" ]]; then
+      echo "tldr-only: already $mode (no change)"
+      return 0
+    fi
+  fi
+
+  if [[ "$mode" == "on" ]]; then
+    _update_env TTS_TLDR_ONLY "1" && echo "tldr-only: on  (speak only the TL;DR block; silent if absent)"
+  else
+    _update_env TTS_TLDR_ONLY "0" && echo "tldr-only: off (speak the full message)"
+  fi
+}
+
+# Defaults mirror src/claude_code_tts/server.py — shown by cmd_config when the
+# plist key is absent so users don't confuse "(unset)" with "(no effective default)".
+# Case-based lookup keeps bash 3.2 compatibility (macOS default /bin/bash).
+_default_for_key() {
+  case "$1" in
+    TTS_PROVIDER)     echo "edge-tts" ;;
+    TTS_VOICE)        echo "ru-RU-SvetlanaNeural" ;;
+    TTS_RATE)         echo "+0%" ;;
+    TTS_PITCH)        echo "+0Hz" ;;
+    OPENAI_TTS_MODEL) echo "tts-1" ;;
+    OPENAI_TTS_VOICE) echo "nova" ;;
+    OPENAI_TTS_SPEED) echo "1.0" ;;
+    TTS_TLDR_ONLY)    echo "1" ;;
+    TTS_MAX_CHARS)    echo "1500" ;;
+    TTS_PORT)         echo "7852" ;;
+    TTS_LOCK_FILE)    echo "/tmp/nl-recording.lock" ;;
+    TTS_RESPECT_LOCK) echo "1" ;;
+    *)                echo "" ;;
+  esac
+}
+
 cmd_config() {
   if [[ ! -f "$PLIST" ]]; then
     echo "plist missing, run: tts install" >&2
@@ -308,12 +356,21 @@ cmd_config() {
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
     OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED
+    TTS_TLDR_ONLY
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
-  local key val
+  local key val default_hint
   for key in "${keys[@]}"; do
-    val=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST" 2>/dev/null || echo "(unset)")
-    printf "  %-18s = %s\n" "$key" "$val"
+    if val=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST" 2>/dev/null); then
+      printf "  %-18s = %s\n" "$key" "$val"
+    else
+      default_hint=$(_default_for_key "$key")
+      if [[ -n "$default_hint" ]]; then
+        printf "  %-18s = (unset, default=%s)\n" "$key" "$default_hint"
+      else
+        printf "  %-18s = (unset)\n" "$key"
+      fi
+    fi
   done
   echo
   if security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
@@ -543,6 +600,7 @@ COMMANDS=(
   openai-model     "<name>  [openai] Switch OpenAI model (tts-1|tts-1-hd|gpt-4o-mini-tts)"
   openai-voices    "[openai]  List available OpenAI voices"
   speed            "<val>   [openai] Set speech speed 0.25–4.0 (e.g. 1.25) and restart"
+  tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
   reset            "Restore edge-tts voice/rate/pitch to defaults (single restart)"
   config           "Print current env values from plist"
   update           "git pull --rebase + install.sh (upgrade to latest)"
