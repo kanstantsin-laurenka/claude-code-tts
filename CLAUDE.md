@@ -21,10 +21,18 @@ Architecture and config details live in `@docs/ARCHITECTURE.md` and `@docs/CONFI
 - `launchd/` — `launchd` plist template
 - `tests/` — pytest suite (tests `clean_text`, `patch_settings`, `server`)
 - `install.sh` / `uninstall.sh` — idempotent, re-runnable
+- `scripts/dev-setup.sh` — one-shot contributor setup (venv, dev deps, git hooks)
+- `.githooks/pre-push` — runs `pytest -q` before `git push`; opt-in via `scripts/dev-setup.sh`
 
 ## Development commands
 
-All Python work runs inside the repo-local venv created by `install.sh`:
+One-time setup on a fresh clone:
+
+```bash
+scripts/dev-setup.sh    # venv + dev deps + enables .githooks/pre-push via core.hooksPath
+```
+
+Day-to-day Python work runs inside the repo-local venv:
 
 ```bash
 venv/bin/pip install -r requirements-dev.txt   # dev deps (pytest, ruff)
@@ -32,6 +40,8 @@ venv/bin/pytest tests/ -v                      # run tests
 venv/bin/ruff format .                         # format
 venv/bin/ruff check .                          # lint
 ```
+
+The `pre-push` hook runs the full pytest suite before any `git push`; bypass with `git push --no-verify`. The hook is only active after `scripts/dev-setup.sh` sets `core.hooksPath=.githooks`.
 
 CI runs ruff lint + pytest on push/PR across Python 3.10 / 3.11 / 3.12 / 3.13 — see `.github/workflows/test.yml`.
 
