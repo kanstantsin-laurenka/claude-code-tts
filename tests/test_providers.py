@@ -137,3 +137,106 @@ def test_openai_synthesize_writes_file(tmp_path, monkeypatch):
     out = tmp_path / "out.mp3"
     asyncio.run(p.synthesize("hello", str(out)))
     assert out.read_bytes() == b"OPENAI"
+
+
+# ---------------------------------------------------------------------------
+# instructions (gpt-4o-mini-tts only — silently dropped for tts-1 / tts-1-hd)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingStreamClient:
+    """AsyncOpenAI stand-in that captures create()'s kwargs on .last_kwargs."""
+
+    class _Resp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def stream_to_file(self, path):
+            Path(path).write_bytes(b"OK")
+
+    class _Streaming:
+        def __init__(self):
+            self.last_kwargs: dict | None = None
+
+        def create(self, **kw):
+            self.last_kwargs = kw
+            return _RecordingStreamClient._Resp()
+
+    class _Speech:
+        def __init__(self, streaming):
+            self.with_streaming_response = streaming
+
+    class _Audio:
+        def __init__(self, streaming):
+            self.speech = _RecordingStreamClient._Speech(streaming)
+
+    def __init__(self, *_a, **_kw) -> None:
+        self._streaming = _RecordingStreamClient._Streaming()
+        self.audio = _RecordingStreamClient._Audio(self._streaming)
+
+    @property
+    def last_kwargs(self) -> dict | None:
+        return self._streaming.last_kwargs
+
+
+def _install_recording_client(monkeypatch) -> None:
+    import claude_code_tts.providers.openai as openai_mod
+
+    monkeypatch.setattr(openai_mod, "AsyncOpenAI", _RecordingStreamClient)
+
+
+def test_instructions_forwarded_for_gpt_4o_mini(tmp_path, monkeypatch):
+    _install_recording_client(monkeypatch)
+    p = OpenAIProvider(
+        model="gpt-4o-mini-tts",
+        voice="ballad",
+        speed=1.0,
+        api_key="sk-x",
+        instructions="Speak calmly with a warm tone",
+    )
+    asyncio.run(p.synthesize("hi", str(tmp_path / "o.mp3")))
+    assert p._client.last_kwargs["instructions"] == "Speak calmly with a warm tone"
+    assert p.describe()["instructions_active"] is True
+
+
+def test_instructions_dropped_for_tts_1(tmp_path, monkeypatch, capsys):
+    _install_recording_client(monkeypatch)
+    p = OpenAIProvider(
+        model="tts-1",
+        voice="nova",
+        speed=1.0,
+        api_key="sk-x",
+        instructions="Speak calmly",
+    )
+    # One-shot warn at construction so the user isn't surprised later.
+    assert "instructions ignored" in capsys.readouterr().err.lower()
+
+    asyncio.run(p.synthesize("hi", str(tmp_path / "o.mp3")))
+    # API call must NOT carry `instructions` — that's the 400 we avoid.
+    assert "instructions" not in p._client.last_kwargs
+    assert p.describe()["instructions_active"] is False
+
+
+def test_instructions_empty_not_forwarded(tmp_path, monkeypatch):
+    _install_recording_client(monkeypatch)
+    p = OpenAIProvider(
+        model="gpt-4o-mini-tts",
+        voice="nova",
+        speed=1.0,
+        api_key="sk-x",
+        instructions="   ",
+    )
+    asyncio.run(p.synthesize("hi", str(tmp_path / "o.mp3")))
+    assert "instructions" not in p._client.last_kwargs
+    assert p.describe()["instructions_active"] is False
+
+
+def test_instructions_omitted_by_default(tmp_path, monkeypatch):
+    _install_recording_client(monkeypatch)
+    p = OpenAIProvider(model="gpt-4o-mini-tts", voice="nova", speed=1.0, api_key="sk-x")
+    asyncio.run(p.synthesize("hi", str(tmp_path / "o.mp3")))
+    assert "instructions" not in p._client.last_kwargs
+    assert p.describe()["instructions_active"] is False

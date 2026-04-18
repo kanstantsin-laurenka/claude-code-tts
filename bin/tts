@@ -453,6 +453,53 @@ cmd_openai_voices() {
   echo "Change:   tts openai-model <name>   tts openai-voice <name>"
 }
 
+cmd_openai_instructions() {
+  local value="${1:?usage: tts openai-instructions \"<text>\"  (one line; e.g. \"Speak calmly with a warm tone\")}"
+  # PlistBuddy "Set :Key value" treats everything past the key as the value —
+  # spaces and most punctuation are fine. Newlines, however, corrupt the plist
+  # and would break launchd silently, so reject them up front.
+  if [[ "$value" == *$'\n'* ]]; then
+    echo "error: instructions must be a single line (no embedded newlines)" >&2
+    return 2
+  fi
+  _update_env OPENAI_TTS_INSTRUCTIONS "$value" \
+    && echo "openai instructions: saved (server restarted)"
+  # Instructions only take effect on gpt-4o-mini-tts. Don't block — the user
+  # may be pre-configuring before switching model — but surface a warn so the
+  # silent drop in the provider is still visible.
+  local current_model
+  current_model=$(_openai_get_plist_value OPENAI_TTS_MODEL "gpt-4o-mini-tts")
+  if [[ "$current_model" != "gpt-4o-mini-tts" ]]; then
+    echo "! note: instructions are only honored by gpt-4o-mini-tts" >&2
+    echo "        current model is '$current_model' — hint is stored but ignored" >&2
+    echo "        enable with: tts openai-model gpt-4o-mini-tts" >&2
+  fi
+}
+
+cmd_openai_instructions_clear() {
+  if [[ ! -f "$PLIST" ]]; then
+    echo "error: plist missing, run: tts install" >&2
+    return 1
+  fi
+  if /usr/libexec/PlistBuddy -c "Delete :EnvironmentVariables:OPENAI_TTS_INSTRUCTIONS" "$PLIST" 2>/dev/null; then
+    _reload_agent && echo "openai instructions: cleared (server restarted)"
+  else
+    echo "openai instructions: not set (no change)"
+  fi
+}
+
+cmd_openai_instructions_show() {
+  # Read-only view — the stored hint can be long, so `tts config` would line-wrap
+  # it into noise. Give users a dedicated command that prints just the value.
+  local value
+  value=$(_openai_get_plist_value OPENAI_TTS_INSTRUCTIONS "")
+  if [[ -z "$value" ]]; then
+    echo "(not set)"
+  else
+    echo "$value"
+  fi
+}
+
 cmd_reset() {
   # Resets edge-tts knobs only. Does not touch TTS_PROVIDER, OpenAI settings,
   # or the Keychain-stored key.
@@ -521,7 +568,7 @@ cmd_config() {
   local keys=(
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
-    OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED
+    OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED OPENAI_TTS_INSTRUCTIONS
     TTS_TLDR_ONLY
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
@@ -658,6 +705,15 @@ cmd_doctor() {
   else
     _fail "voice '$doc_voice' is NOT supported by model '$doc_model' — run: tts openai-voices"
   fi
+  local doc_instructions
+  doc_instructions=$(_openai_get_plist_value OPENAI_TTS_INSTRUCTIONS "")
+  if [[ -n "$doc_instructions" ]]; then
+    if [[ "$doc_model" == "gpt-4o-mini-tts" ]]; then
+      _ok "instructions set and active (model supports it)"
+    else
+      _warn "instructions set but model '$doc_model' ignores them (only gpt-4o-mini-tts applies)"
+    fi
+  fi
 
   echo
   echo "== launchd plist =="
@@ -784,6 +840,9 @@ COMMANDS=(
   openai-voice     "<name>  [openai] Switch OpenAI voice (e.g. nova, alloy) and restart"
   openai-model     "<name>  [openai] Switch OpenAI model (tts-1|tts-1-hd|gpt-4o-mini-tts)"
   openai-voices    "[openai]  List available OpenAI voices"
+  openai-instructions        "<text>  [openai/gpt-4o-mini-tts] Set tone/style hint (one line)"
+  openai-instructions-clear  "[openai]  Remove the stored tone/style hint"
+  openai-instructions-show   "[openai]  Print the stored tone/style hint"
   speed            "<val>   [openai] Set speech speed 0.25–4.0 (e.g. 1.25) and restart"
   tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
   reset            "Restore edge-tts voice/rate/pitch to defaults (single restart)"

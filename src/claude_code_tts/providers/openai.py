@@ -11,6 +11,10 @@ Business rules:
   - speed is clamped client-side to OpenAI's supported 0.25–4.0 range just in
     case an invalid env var slips past bin/tts validation.
   - tts-1 / tts-1-hd / gpt-4o-mini-tts all share the same call shape.
+  - `instructions` (free-form tone/style text) is only supported by
+    gpt-4o-mini-tts. For tts-1 / tts-1-hd we silently drop it and log once at
+    construction — the user keeps the setting in the plist and it becomes
+    active again as soon as they switch model, without a 400 in the middle.
 
 Dependencies: openai (pip).
 """
@@ -24,11 +28,20 @@ from . import ProviderError, TTSProvider
 SPEED_MIN = 0.25
 SPEED_MAX = 4.0
 
+INSTRUCTIONS_CAPABLE_MODELS = frozenset({"gpt-4o-mini-tts"})
+
 
 class OpenAIProvider(TTSProvider):
     name = "openai"
 
-    def __init__(self, model: str, voice: str, speed: float, api_key: str | None) -> None:
+    def __init__(
+        self,
+        model: str,
+        voice: str,
+        speed: float,
+        api_key: str | None,
+        instructions: str | None = None,
+    ) -> None:
         self.model = model
         self.voice = voice
         clamped = max(SPEED_MIN, min(SPEED_MAX, speed))
@@ -42,6 +55,20 @@ class OpenAIProvider(TTSProvider):
                 flush=True,
             )
         self.speed = clamped
+        # Normalize: empty/whitespace-only strings behave as "not set" so we
+        # never send an empty `instructions` field to the API.
+        cleaned_instructions = (instructions or "").strip() or None
+        self.instructions = cleaned_instructions
+        if cleaned_instructions and model not in INSTRUCTIONS_CAPABLE_MODELS:
+            # One-shot warn at construction. We deliberately keep the field on
+            # `self` so `tts config`/`/health` still reflect the user's intent,
+            # and the moment they switch to gpt-4o-mini-tts it becomes active.
+            print(
+                f"[tts] OPENAI_TTS_INSTRUCTIONS ignored: model={model} does not "
+                "support instructions (only gpt-4o-mini-tts does)",
+                file=sys.stderr,
+                flush=True,
+            )
         self.api_key = api_key
         self._client: AsyncOpenAI | None = None
         if api_key:
@@ -52,6 +79,12 @@ class OpenAIProvider(TTSProvider):
             raise ProviderError(
                 "OpenAI API key missing — set it with: tts openai-key",
             )
+        # Only forward instructions when the model accepts it. Anything else
+        # triggers a 400 from the API — the very failure mode this feature is
+        # designed to avoid.
+        extra: dict = {}
+        if self.instructions and self.model in INSTRUCTIONS_CAPABLE_MODELS:
+            extra["instructions"] = self.instructions
         try:
             async with self._client.audio.speech.with_streaming_response.create(
                 model=self.model,
@@ -59,6 +92,7 @@ class OpenAIProvider(TTSProvider):
                 input=text,
                 speed=self.speed,
                 response_format="mp3",
+                **extra,
             ) as response:
                 await response.stream_to_file(out_path)
         except AuthenticationError as e:
@@ -79,4 +113,10 @@ class OpenAIProvider(TTSProvider):
             "voice": self.voice,
             "speed": self.speed,
             "key_loaded": self._client is not None,
+            # active=True only when the model actually accepts it — mirrors
+            # synthesize()'s gating so /health reflects runtime behavior, not
+            # just what the user configured.
+            "instructions_active": bool(
+                self.instructions and self.model in INSTRUCTIONS_CAPABLE_MODELS
+            ),
         }

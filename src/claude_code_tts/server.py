@@ -56,6 +56,11 @@ PITCH = os.environ.get("TTS_PITCH", "+0Hz")
 
 OPENAI_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 OPENAI_VOICE = os.environ.get("OPENAI_TTS_VOICE", "nova")
+# Free-form tone/style hint, e.g. "Speak calmly in Russian with a warm tone".
+# Only honored by gpt-4o-mini-tts — the provider drops it for tts-1(-hd) to
+# avoid 400 errors, so the setting is safe to leave in the plist during
+# temporary model switches.
+OPENAI_INSTRUCTIONS = os.environ.get("OPENAI_TTS_INSTRUCTIONS", "")
 
 
 def _parse_speed(raw: str) -> float:
@@ -95,6 +100,7 @@ def _make_provider() -> TTSProvider:
             voice=OPENAI_VOICE,
             speed=OPENAI_SPEED,
             api_key=keychain.get_openai_key(),
+            instructions=OPENAI_INSTRUCTIONS,
         )
     # Unknown values fall through to edge-tts so a typo in TTS_PROVIDER doesn't
     # brick the server — just log and use the free default.
