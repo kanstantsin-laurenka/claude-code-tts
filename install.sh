@@ -118,6 +118,39 @@ else
     say "plist: $PLIST_TARGET"
 fi
 
+# 6b. Validate OPENAI_TTS_MODEL ↔ OPENAI_TTS_VOICE pair against OpenAI's per-model
+# allow-list (kept in sync with _openai_voices_for_model in bin/tts — update
+# both if OpenAI changes its voice lineup). We only warn: edge-tts users don't
+# care, and a warning surfaces the problem without blocking re-install.
+openai_model=$(
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:OPENAI_TTS_MODEL" "$PLIST_TARGET" 2>/dev/null \
+    || echo "gpt-4o-mini-tts"
+)
+openai_voice=$(
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:OPENAI_TTS_VOICE" "$PLIST_TARGET" 2>/dev/null \
+    || echo "nova"
+)
+case "$openai_model" in
+    tts-1|tts-1-hd)    openai_allowed="alloy ash coral echo fable nova onyx sage shimmer" ;;
+    gpt-4o-mini-tts)   openai_allowed="alloy ash ballad coral echo fable marin nova onyx sage shimmer verse cedar" ;;
+    *)                 openai_allowed="" ;;
+esac
+if [[ -z "$openai_allowed" ]]; then
+    warn "OPENAI_TTS_MODEL=$openai_model is not a recognized model — check: tts openai-voices"
+else
+    openai_voice_ok=0
+    for v in $openai_allowed; do
+        [[ "$v" == "$openai_voice" ]] && openai_voice_ok=1 && break
+    done
+    if [[ "$openai_voice_ok" -eq 0 ]]; then
+        warn "OPENAI_TTS_VOICE=$openai_voice is NOT supported by OPENAI_TTS_MODEL=$openai_model"
+        warn "supported for $openai_model: $openai_allowed"
+        warn "fix: tts openai-voice <name>  OR  tts openai-model <name>  (see: tts openai-voices)"
+    else
+        say "openai pair OK: model=$openai_model voice=$openai_voice"
+    fi
+fi
+
 # 7. Remove legacy launchd agent (if any)
 if launchctl print "${DOMAIN}/${OLD_LABEL}" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN" "$OLD_PLIST" 2>/dev/null || true

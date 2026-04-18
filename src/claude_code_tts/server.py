@@ -54,7 +54,7 @@ VOICE = os.environ.get("TTS_VOICE", "ru-RU-SvetlanaNeural")
 RATE = os.environ.get("TTS_RATE", "+0%")
 PITCH = os.environ.get("TTS_PITCH", "+0Hz")
 
-OPENAI_MODEL = os.environ.get("OPENAI_TTS_MODEL", "tts-1")
+OPENAI_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 OPENAI_VOICE = os.environ.get("OPENAI_TTS_VOICE", "nova")
 
 

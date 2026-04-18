@@ -270,7 +270,7 @@ def test_openai_provider_health(openai_server):
     data = json.loads(body)
     cfg = data["config"]
     assert cfg["provider"] == "openai"
-    assert cfg["model"] == "tts-1"
+    assert cfg["model"] == "gpt-4o-mini-tts"
     assert cfg["voice"] == "nova"
     assert cfg["key_loaded"] is True
     # Key itself must never leak into /health.

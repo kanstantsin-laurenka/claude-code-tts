@@ -217,6 +217,72 @@ cmd_voices() {
   "$py" -c 'import asyncio, edge_tts; voices = asyncio.run(edge_tts.list_voices()); [print(v["ShortName"], "—", v.get("Gender",""), v.get("Locale","")) for v in voices if v["Locale"].startswith(("ru","en"))]'
 }
 
+# Voice-per-model matrix. Single source of truth for: `tts openai-voices`,
+# model↔voice validation in `openai-voice`/`openai-model`/`doctor`, and
+# install.sh's post-render sanity check.
+#
+# Source: https://developers.openai.com/api/docs/guides/text-to-speech
+#   - tts-1 / tts-1-hd: 9 voices (no ballad, verse, marin, cedar)
+#   - gpt-4o-mini-tts:  13 voices (superset)
+# Keep the bash-3.2-compatible case form — macOS ships bash 3.2 as /bin/bash.
+_openai_voices_for_model() {
+  case "$1" in
+    tts-1|tts-1-hd)
+      echo "alloy ash coral echo fable nova onyx sage shimmer"
+      ;;
+    gpt-4o-mini-tts)
+      echo "alloy ash ballad coral echo fable marin nova onyx sage shimmer verse cedar"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# List of every known OpenAI TTS model. Used by _openai_model_for_voice_hint
+# to suggest which model supports a voice the user tried to set.
+_openai_known_models() {
+  echo "tts-1 tts-1-hd gpt-4o-mini-tts"
+}
+
+# True (exit 0) if $voice is supported by $model. Non-zero for unknown model
+# or unsupported voice.
+_openai_voice_supported_by() {
+  local model="$1" voice="$2" v voices
+  voices=$(_openai_voices_for_model "$model") || return 2
+  for v in $voices; do
+    [[ "$v" == "$voice" ]] && return 0
+  done
+  return 1
+}
+
+# Suggest a model that supports $voice, or empty if none. Lets error messages
+# turn "voice X is not valid here" into "voice X works with model Y, run: ...".
+_openai_model_for_voice_hint() {
+  local voice="$1" m
+  for m in $(_openai_known_models); do
+    if _openai_voice_supported_by "$m" "$voice"; then
+      echo "$m"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Read one EnvironmentVariables key from the installed plist, falling back to
+# the given default. Used by validation paths that must know the *current*
+# other half of the model↔voice pair, not just the new value the user is
+# setting. Mirrors the server's own defaults so the CLI and server agree.
+_openai_get_plist_value() {
+  local key="$1" default="$2"
+  if [[ -f "$PLIST" ]]; then
+    /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST" 2>/dev/null \
+      || echo "$default"
+  else
+    echo "$default"
+  fi
+}
+
 # Print a one-line hint if the Keychain OpenAI key is missing or obviously
 # malformed. Returns non-zero so callers can gate follow-up output on it.
 _warn_openai_key_unusable() {
@@ -308,7 +374,24 @@ cmd_openai_key_clear() {
 }
 
 cmd_openai_voice() {
-  local name="${1:?usage: tts openai-voice <name> (e.g. nova, alloy, echo)}"
+  local name="${1:?usage: tts openai-voice <name> (e.g. nova, alloy, ballad — see: tts openai-voices)}"
+  # Validate against the *currently-configured* model so the user catches
+  # pair mismatches (e.g. voice=ballad with model=tts-1) at CLI time instead
+  # of much later, as a 400 buried in logs/server.log.
+  local current_model
+  current_model=$(_openai_get_plist_value OPENAI_TTS_MODEL "gpt-4o-mini-tts")
+  if ! _openai_voice_supported_by "$current_model" "$name"; then
+    echo "error: voice '$name' is not supported by model '$current_model'" >&2
+    echo "       supported for $current_model: $(_openai_voices_for_model "$current_model")" >&2
+    local suggested
+    if suggested=$(_openai_model_for_voice_hint "$name"); then
+      echo "       hint: '$name' works with model '$suggested'" >&2
+      echo "             run first: tts openai-model $suggested" >&2
+    else
+      echo "       hint: see full matrix with: tts openai-voices" >&2
+    fi
+    return 2
+  fi
   _update_env OPENAI_TTS_VOICE "$name" && echo "openai voice: $name (server restarted)"
 }
 
@@ -318,6 +401,17 @@ cmd_openai_model() {
     tts-1|tts-1-hd|gpt-4o-mini-tts) ;;
     *) echo "error: unknown model '$name' (expected tts-1, tts-1-hd, or gpt-4o-mini-tts)" >&2; return 2 ;;
   esac
+  # Refuse to switch to a model that doesn't support the *currently-configured*
+  # voice — otherwise the next /speak returns 400 and only logs/server.log
+  # explains why. The fix path is printed so users can do it in one shot.
+  local current_voice
+  current_voice=$(_openai_get_plist_value OPENAI_TTS_VOICE "nova")
+  if ! _openai_voice_supported_by "$name" "$current_voice"; then
+    echo "error: current voice '$current_voice' is NOT supported by model '$name'" >&2
+    echo "       supported for $name: $(_openai_voices_for_model "$name")" >&2
+    echo "       fix: run 'tts openai-voice <one-of-above>' first, then 'tts openai-model $name'" >&2
+    return 2
+  fi
   _update_env OPENAI_TTS_MODEL "$name" && echo "openai model: $name (server restarted)"
 }
 
@@ -336,11 +430,27 @@ cmd_speed() {
 }
 
 cmd_openai_voices() {
-  cat <<'EOF'
-OpenAI TTS voices (11):
-  alloy  ash  ballad  coral  echo  fable  nova  onyx  sage  shimmer  verse
-Switch with: tts openai-voice <name>
-EOF
+  # Print the model↔voice matrix as a two-column table so the user can see at
+  # a glance which voices are legal for which model. The data comes from
+  # _openai_voices_for_model (single source of truth).
+  local m current_model current_voice
+  current_model=$(_openai_get_plist_value OPENAI_TTS_MODEL "gpt-4o-mini-tts")
+  current_voice=$(_openai_get_plist_value OPENAI_TTS_VOICE "nova")
+
+  echo "OpenAI TTS voices per model:"
+  echo
+  printf "  %-16s  %s\n" "Model" "Supported voices"
+  printf "  %-16s  %s\n" "----------------" "----------------"
+  for m in $(_openai_known_models); do
+    printf "  %-16s  %s\n" "$m" "$(_openai_voices_for_model "$m")"
+  done
+  echo
+  echo "Current:  model=$current_model  voice=$current_voice"
+  if ! _openai_voice_supported_by "$current_model" "$current_voice"; then
+    echo "          ! mismatch — '$current_voice' is not valid for '$current_model'"
+  fi
+  echo
+  echo "Change:   tts openai-model <name>   tts openai-voice <name>"
 }
 
 cmd_reset() {
@@ -388,7 +498,7 @@ _default_for_key() {
     TTS_VOICE)        echo "ru-RU-SvetlanaNeural" ;;
     TTS_RATE)         echo "+0%" ;;
     TTS_PITCH)        echo "+0Hz" ;;
-    OPENAI_TTS_MODEL) echo "tts-1" ;;
+    OPENAI_TTS_MODEL) echo "gpt-4o-mini-tts" ;;
     OPENAI_TTS_VOICE) echo "nova" ;;
     OPENAI_TTS_SPEED) echo "1.0" ;;
     TTS_TLDR_ONLY)    echo "1" ;;
@@ -536,6 +646,17 @@ cmd_doctor() {
     fi
   else
     _fail "venv missing — run: tts install"
+  fi
+
+  echo
+  echo "== OpenAI model/voice pair =="
+  local doc_model doc_voice
+  doc_model=$(_openai_get_plist_value OPENAI_TTS_MODEL "gpt-4o-mini-tts")
+  doc_voice=$(_openai_get_plist_value OPENAI_TTS_VOICE "nova")
+  if _openai_voice_supported_by "$doc_model" "$doc_voice"; then
+    _ok "voice '$doc_voice' is valid for model '$doc_model'"
+  else
+    _fail "voice '$doc_voice' is NOT supported by model '$doc_model' — run: tts openai-voices"
   fi
 
   echo
