@@ -33,7 +33,7 @@ venv/bin/ruff format .                         # format
 venv/bin/ruff check .                          # lint
 ```
 
-CI runs pytest on push/PR across Python 3.10 / 3.11 / 3.12 / 3.13 — see `.github/workflows/test.yml`.
+CI runs ruff lint + pytest on push/PR across Python 3.10 / 3.11 / 3.12 / 3.13 — see `.github/workflows/test.yml`.
 
 Use the `/verify` skill to run lint + format-check + tests in one shot before marking work done.
 
