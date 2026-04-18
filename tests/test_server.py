@@ -57,6 +57,9 @@ def server(monkeypatch, tmp_path):
     monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
     monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
     monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    # Existing server-level tests predate the TL;DR gate; disable it so they
+    # exercise the full speak path. Dedicated tldr_server fixture below re-enables it.
+    monkeypatch.setenv("TTS_TLDR_ONLY", "0")
 
     import claude_code_tts.server as srv
 
@@ -302,3 +305,57 @@ def test_invalid_speed_does_not_crash_server(monkeypatch):
     importlib.reload(srv)
 
     assert srv.OPENAI_SPEED == 1.0
+
+
+@pytest.fixture
+def tldr_server(monkeypatch, tmp_path):
+    """Server with TTS_TLDR_ONLY=1 (the default in production) + edge-tts mocked."""
+    port = _free_port()
+    lock_file = tmp_path / "nl-recording.lock"
+
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    monkeypatch.setenv("TTS_TLDR_ONLY", "1")
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    _patch_edge(monkeypatch)
+    _patch_afplay(monkeypatch, srv)
+
+    httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield {"port": port, "srv": srv}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_tldr_only_health_reports_flag(tldr_server):
+    status, body = _request(tldr_server["port"], "GET", "/health")
+    assert status == 200
+    assert json.loads(body)["tldr_only"] is True
+
+
+def test_tldr_only_speaks_when_marker_present(tldr_server):
+    msg = "Длинное вступление.\n\n## TL;DR\n\nКратко: готово."
+    status, body = _request(tldr_server["port"], "POST", "/speak", {"text": msg})
+    assert status == 202
+    assert "готово" in json.loads(body)["preview"].lower()
+
+
+def test_tldr_only_silent_without_marker(tldr_server):
+    status, body = _request(
+        tldr_server["port"],
+        "POST",
+        "/speak",
+        {"text": "Большое сообщение без итогового блока."},
+    )
+    assert status == 204
+    assert body == b""

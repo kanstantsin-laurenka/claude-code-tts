@@ -70,6 +70,7 @@ tts restart
 
 | Variable | Default | Notes |
 |---|---|---|
+| `TTS_TLDR_ONLY` | `1` | When `1`, the server speaks only the text after the last `TL;DR` marker. If the message has no marker the server stays silent. Toggle with `tts tldr on/off`. |
 | `TTS_MAX_CHARS` | `1500` | Soft limit ~10 s of speech; exceeded text gets a spoken "ответ сокращён" suffix |
 | `TTS_PORT` | `7852` | Change only if 7852 is busy on your machine |
 | `TTS_LOCK_FILE` | `/tmp/nl-recording.lock` | File whose presence suppresses playback |
@@ -87,6 +88,17 @@ tts openai-voice nova           # openai: warm female
 ```
 
 edge-tts full list (hundreds of locales): run `tts voices` without filters, or see [edge-tts voice samples](https://tts.travisvn.com/).
+
+## TL;DR-only mode
+
+Default behavior: the server speaks **only the TL;DR block** at the end of an assistant message. Anything before the last line matching one of `## TL;DR`, `**TL;DR**`, `TL;DR:`, or bare `TL;DR` (case-insensitive, at line start) is dropped before synthesis. If no marker is found, the server is silent (HTTP 204).
+
+This keeps playback short — assistant-side workflow is expected to always emit a concise summary block at the end. Toggle off to restore the old "speak the whole message" behavior:
+
+```bash
+tts tldr off     # speak the full message
+tts tldr on      # speak only TL;DR (default)
+```
 
 ## Enabled flag
 

@@ -1,6 +1,6 @@
 import pytest
 
-from claude_code_tts.clean_text import TRUNCATION_SUFFIX, clean_for_tts
+from claude_code_tts.clean_text import TRUNCATION_SUFFIX, clean_for_tts, extract_tldr
 
 
 @pytest.mark.parametrize(
@@ -51,3 +51,66 @@ def test_truncation_adds_suffix():
 
 def test_code_only_input_becomes_empty():
     assert clean_for_tts("```python\nprint('x')\n```") == ""
+
+
+@pytest.mark.parametrize(
+    "name,raw,expected",
+    [
+        (
+            "h2 header",
+            "Всё готово.\n\n## TL;DR\n\nКратко: сделано.",
+            "Кратко: сделано.",
+        ),
+        (
+            "h3 header",
+            "Отчёт.\n\n### TL;DR\nВсё ок.",
+            "Всё ок.",
+        ),
+        (
+            "bold marker",
+            "Длинный текст...\n\n**TL;DR**\n\nСуть в одной строке.",
+            "Суть в одной строке.",
+        ),
+        (
+            "inline colon",
+            "prose prose\nTL;DR: коротко и ясно",
+            "коротко и ясно",
+        ),
+        (
+            "bare marker",
+            "blah\nTL;DR\n\nрезюме",
+            "резюме",
+        ),
+        (
+            "case insensitive",
+            "bla\n## tl;dr\nlowercase",
+            "lowercase",
+        ),
+        (
+            "takes last marker",
+            "## TL;DR\nпервая версия\n\n## TL;DR\nокончательная версия",
+            "окончательная версия",
+        ),
+        (
+            "multiline body preserved",
+            "## TL;DR\n\nпервая строка.\nвторая строка.",
+            "первая строка.\nвторая строка.",
+        ),
+    ],
+)
+def test_extract_tldr_positive(name, raw, expected):
+    assert extract_tldr(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        None,
+        "просто текст без маркера",
+        "As a TL;DR approach, we could...",  # not at line start → not a marker
+        "## TL;DR\n\n   \n",  # marker present but body empty after strip
+    ],
+)
+def test_extract_tldr_absent_returns_none(raw):
+    assert extract_tldr(raw) is None

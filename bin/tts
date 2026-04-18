@@ -296,6 +296,15 @@ cmd_reset() {
   _reload_agent && echo "reset: voice=ru-RU-SvetlanaNeural, rate=+0%, pitch=+0Hz (edge-tts knobs only)"
 }
 
+cmd_tldr() {
+  local mode="${1:?usage: tts tldr <on|off>}"
+  case "$mode" in
+    on)  _update_env TTS_TLDR_ONLY "1" && echo "tldr-only: on  (speak only the TL;DR block; silent if absent)" ;;
+    off) _update_env TTS_TLDR_ONLY "0" && echo "tldr-only: off (speak the full message)" ;;
+    *)   echo "usage: tts tldr <on|off>" >&2; return 2 ;;
+  esac
+}
+
 cmd_config() {
   if [[ ! -f "$PLIST" ]]; then
     echo "plist missing, run: tts install" >&2
@@ -308,6 +317,7 @@ cmd_config() {
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
     OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED
+    TTS_TLDR_ONLY
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
   local key val
@@ -543,6 +553,7 @@ COMMANDS=(
   openai-model     "<name>  [openai] Switch OpenAI model (tts-1|tts-1-hd|gpt-4o-mini-tts)"
   openai-voices    "[openai]  List available OpenAI voices"
   speed            "<val>   [openai] Set speech speed 0.25–4.0 (e.g. 1.25) and restart"
+  tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
   reset            "Restore edge-tts voice/rate/pitch to defaults (single restart)"
   config           "Print current env values from plist"
   update           "git pull --rebase + install.sh (upgrade to latest)"
