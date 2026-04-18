@@ -15,6 +15,8 @@ Business rules:
 Dependencies: openai (pip).
 """
 
+import sys
+
 from openai import APIError, AsyncOpenAI, AuthenticationError, BadRequestError, RateLimitError
 
 from . import ProviderError, TTSProvider
@@ -29,7 +31,17 @@ class OpenAIProvider(TTSProvider):
     def __init__(self, model: str, voice: str, speed: float, api_key: str | None) -> None:
         self.model = model
         self.voice = voice
-        self.speed = max(SPEED_MIN, min(SPEED_MAX, speed))
+        clamped = max(SPEED_MIN, min(SPEED_MAX, speed))
+        if clamped != speed:
+            # Surface silent clamping — a manual plist edit could otherwise put
+            # speed outside [0.25, 4.0] and the user would never know.
+            print(
+                f"[tts] OPENAI_TTS_SPEED={speed} out of [{SPEED_MIN}, {SPEED_MAX}], "
+                f"clamped to {clamped}",
+                file=sys.stderr,
+                flush=True,
+            )
+        self.speed = clamped
         self.api_key = api_key
         self._client: AsyncOpenAI | None = None
         if api_key:
