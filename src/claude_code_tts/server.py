@@ -10,7 +10,9 @@ Business rules:
   - When TTS_TLDR_ONLY=1 (default), only the text after the last "TL;DR"
     marker is synthesized; if the message has no TL;DR the server stays
     silent (returns 204). This trains the assistant-side workflow to always
-    emit a short summary block.
+    emit a short summary block. TTS_TLDR_FALLBACK_TEXT (empty by default)
+    overrides that silence with a fixed phrase — useful as a "task done,
+    no summary" cue without losing the gate entirely for other messages.
   - Text is sanitized via clean_text.clean_for_tts before synthesis so code
     blocks and markdown do not reach the voice model.
   - If TTS_LOCK_FILE exists (/tmp/nl-recording.lock by default) the server
@@ -83,6 +85,12 @@ OPENAI_SPEED = _parse_speed(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
 
 TLDR_ONLY = os.environ.get("TTS_TLDR_ONLY", "1") == "1"
+# Opt-in replacement for the 204-silence when TLDR_ONLY=1 and the message has
+# no TL;DR block. Empty string (default) preserves the silent-skip behavior
+# that trains the assistant to always emit a summary. A non-empty value is
+# spoken as-is, bypassing the TL;DR gate for that one request — useful as a
+# "task done" confirmation beep when the assistant forgot the TL;DR.
+TLDR_FALLBACK_TEXT = os.environ.get("TTS_TLDR_FALLBACK_TEXT", "")
 
 LOCK_FILE = os.environ.get("TTS_LOCK_FILE", "/tmp/nl-recording.lock")
 RESPECT_LOCK = os.environ.get("TTS_RESPECT_LOCK", "1") == "1"
@@ -151,9 +159,20 @@ def _speak(text: str) -> tuple[int, str]:
     if TLDR_ONLY:
         tldr = extract_tldr(text)
         if tldr is None:
-            log(f"no TL;DR block found; skipping playback (TTS_TLDR_ONLY=1); preview={text[:80]!r}")
-            return 204, ""
-        body_to_speak = tldr
+            if TLDR_FALLBACK_TEXT:
+                log(
+                    f"no TL;DR block — speaking fallback "
+                    f"({len(TLDR_FALLBACK_TEXT)} chars); preview={text[:80]!r}"
+                )
+                body_to_speak = TLDR_FALLBACK_TEXT
+            else:
+                log(
+                    f"no TL;DR block found; skipping playback (TTS_TLDR_ONLY=1); "
+                    f"preview={text[:80]!r}"
+                )
+                return 204, ""
+        else:
+            body_to_speak = tldr
     else:
         body_to_speak = text
 
@@ -230,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "config": PROVIDER.describe(),
                     "tldr_only": TLDR_ONLY,
+                    "tldr_fallback": bool(TLDR_FALLBACK_TEXT),
                     "lock_file": LOCK_FILE,
                     "respect_lock": RESPECT_LOCK,
                     "locked": _is_locked(),

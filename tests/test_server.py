@@ -327,6 +327,8 @@ def tldr_server(monkeypatch, tmp_path):
     monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
     monkeypatch.setenv("TTS_TLDR_ONLY", "1")
     monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    # Guarantee the silent-skip path isn't masked by an inherited fallback env.
+    monkeypatch.delenv("TTS_TLDR_FALLBACK_TEXT", raising=False)
 
     import claude_code_tts.server as srv
 
@@ -382,3 +384,110 @@ def test_tldr_only_skip_logs_preview(tldr_server, capfd):
     err = capfd.readouterr().err
     assert "skipping playback" in err
     assert "Это начало" in err
+
+
+# ---------------------------------------------------------------------------
+# TLDR fallback text (TTS_TLDR_FALLBACK_TEXT)
+# ---------------------------------------------------------------------------
+
+FALLBACK_PHRASE = "Задача выполнена. Нет блока TL;DR"
+
+
+@pytest.fixture
+def tldr_fallback_server(monkeypatch, tmp_path):
+    """TLDR_ONLY=1 + a configured fallback phrase. Edge-tts + afplay mocked."""
+    port = _free_port()
+    lock_file = tmp_path / "nl-recording.lock"
+
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    monkeypatch.setenv("TTS_TLDR_ONLY", "1")
+    monkeypatch.setenv("TTS_TLDR_FALLBACK_TEXT", FALLBACK_PHRASE)
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+    _patch_edge(monkeypatch)
+    _patch_afplay(monkeypatch, srv)
+
+    httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield {"port": port, "srv": srv}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_tldr_fallback_health_reports_flag(tldr_fallback_server):
+    status, body = _request(tldr_fallback_server["port"], "GET", "/health")
+    assert status == 200
+    data = json.loads(body)
+    assert data["tldr_only"] is True
+    assert data["tldr_fallback"] is True
+
+
+def test_tldr_fallback_spoken_when_marker_missing(tldr_fallback_server):
+    """No TL;DR + fallback configured → speak fallback, not silent 204."""
+    status, body = _request(
+        tldr_fallback_server["port"],
+        "POST",
+        "/speak",
+        {"text": "Сообщение без итогового блока."},
+    )
+    assert status == 202
+    preview = json.loads(body)["preview"]
+    assert "задача выполнена" in preview.lower()
+
+
+def test_tldr_fallback_does_not_override_existing_tldr(tldr_fallback_server):
+    """When TL;DR is present, the fallback must NOT replace it."""
+    msg = "Вступление.\n\n## TL;DR\n\nКратко: готово."
+    status, body = _request(tldr_fallback_server["port"], "POST", "/speak", {"text": msg})
+    assert status == 202
+    preview = json.loads(body)["preview"].lower()
+    assert "готово" in preview
+    assert "задача выполнена" not in preview
+
+
+def test_tldr_fallback_log_mentions_fallback(tldr_fallback_server, capfd):
+    _request(
+        tldr_fallback_server["port"],
+        "POST",
+        "/speak",
+        {"text": "Нет блока итога тут."},
+    )
+    err = capfd.readouterr().err
+    assert "fallback" in err.lower()
+    # Silent-skip wording must NOT appear — that's the path we just replaced.
+    assert "skipping playback" not in err
+
+
+def test_tldr_fallback_empty_env_keeps_silent_skip(monkeypatch, tmp_path):
+    """Explicit empty TTS_TLDR_FALLBACK_TEXT behaves identically to unset."""
+    port = _free_port()
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(tmp_path / "lock"))
+    monkeypatch.setenv("TTS_TLDR_ONLY", "1")
+    monkeypatch.setenv("TTS_TLDR_FALLBACK_TEXT", "")
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+    _patch_edge(monkeypatch)
+    _patch_afplay(monkeypatch, srv)
+
+    httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _ = _request(port, "POST", "/speak", {"text": "Нет TL;DR."})
+        assert status == 204
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

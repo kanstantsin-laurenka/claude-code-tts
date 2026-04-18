@@ -500,6 +500,49 @@ cmd_openai_instructions_show() {
   fi
 }
 
+cmd_tldr_fallback() {
+  local value="${1:?usage: tts tldr-fallback \"<text>\"  (spoken when TL;DR is missing; one line)}"
+  # Same PlistBuddy reasoning as openai-instructions: spaces fine, newlines
+  # would corrupt the plist.
+  if [[ "$value" == *$'\n'* ]]; then
+    echo "error: fallback text must be a single line (no embedded newlines)" >&2
+    return 2
+  fi
+  _update_env TTS_TLDR_FALLBACK_TEXT "$value" \
+    && echo "tldr fallback: saved (server restarted)"
+  # Warn if TLDR_ONLY is off — the fallback never fires in that mode because
+  # the full message is spoken anyway. Not a hard error: the user may be
+  # pre-configuring before flipping TLDR_ONLY back on.
+  local tldr_mode
+  tldr_mode=$(_openai_get_plist_value TTS_TLDR_ONLY "1")
+  if [[ "$tldr_mode" != "1" ]]; then
+    echo "! note: TTS_TLDR_ONLY=0 — fallback is stored but never fires" >&2
+    echo "        enable with: tts tldr on" >&2
+  fi
+}
+
+cmd_tldr_fallback_clear() {
+  if [[ ! -f "$PLIST" ]]; then
+    echo "error: plist missing, run: tts install" >&2
+    return 1
+  fi
+  if /usr/libexec/PlistBuddy -c "Delete :EnvironmentVariables:TTS_TLDR_FALLBACK_TEXT" "$PLIST" 2>/dev/null; then
+    _reload_agent && echo "tldr fallback: cleared (server restarted; silent-skip restored)"
+  else
+    echo "tldr fallback: not set (no change)"
+  fi
+}
+
+cmd_tldr_fallback_show() {
+  local value
+  value=$(_openai_get_plist_value TTS_TLDR_FALLBACK_TEXT "")
+  if [[ -z "$value" ]]; then
+    echo "(not set — server stays silent when TL;DR block is missing)"
+  else
+    echo "$value"
+  fi
+}
+
 cmd_reset() {
   # Resets edge-tts knobs only. Does not touch TTS_PROVIDER, OpenAI settings,
   # or the Keychain-stored key.
@@ -569,7 +612,7 @@ cmd_config() {
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
     OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED OPENAI_TTS_INSTRUCTIONS
-    TTS_TLDR_ONLY
+    TTS_TLDR_ONLY TTS_TLDR_FALLBACK_TEXT
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
   local key val default_hint
@@ -845,6 +888,9 @@ COMMANDS=(
   openai-instructions-show   "[openai]  Print the stored tone/style hint"
   speed            "<val>   [openai] Set speech speed 0.25–4.0 (e.g. 1.25) and restart"
   tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
+  tldr-fallback        "<text>  Phrase spoken when TL;DR is missing (overrides silent-skip)"
+  tldr-fallback-clear  "Remove the TL;DR fallback phrase (restore silent-skip)"
+  tldr-fallback-show   "Print the stored TL;DR fallback phrase"
   reset            "Restore edge-tts voice/rate/pitch to defaults (single restart)"
   config           "Print current env values from plist"
   update           "git pull --rebase + install.sh (upgrade to latest)"
