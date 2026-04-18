@@ -1,7 +1,8 @@
 """
 TTS SERVER
 
-HTTP bridge between Claude Code Stop-hook (hooks/tts-stop.sh) and Microsoft edge-tts.
+HTTP bridge between Claude Code Stop-hook (hooks/tts-stop.sh) and a pluggable
+TTS provider (edge-tts by default, OpenAI optional).
 
 Business rules:
   - Only ever one afplay process alive: a new /speak SIGTERMs the previous
@@ -12,10 +13,14 @@ Business rules:
     skips playback. Hammerspoon's whisper hotkey creates that lock while the
     microphone is recording — playing TTS during that window would leak the
     voice into the transcription.
-  - On edge-tts/network failure, return 5xx and let the caller (tts-stop.sh)
-    swallow it silently — Claude Code must never be blocked by TTS.
+  - On provider failure (edge-tts/OpenAI/network), return 5xx and let the
+    caller (tts-stop.sh) swallow it silently — Claude Code must never be
+    blocked by TTS.
+  - Provider choice is frozen at module load: switching providers requires a
+    launchd restart (`tts restart` or `tts provider ...`, which restarts).
 
-Dependencies: edge-tts (pip); afplay (macOS built-in).
+Dependencies: edge-tts + openai (pip); afplay (macOS built-in); `security` CLI
+  for reading the OpenAI key from the Keychain.
 Related: hooks/tts-stop.sh, ~/.claude/settings.json (Stop hook),
          /tmp/nl-recording.lock (written by Hammerspoon STT config in TTS2 project).
 """
@@ -30,16 +35,42 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import edge_tts
-
+from . import keychain
 from .clean_text import clean_for_tts
+from .providers import ProviderError, TTSProvider
+from .providers.edge import EdgeTTSProvider
+from .providers.openai import OpenAIProvider
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TTS_PORT", "7852"))
 
+PROVIDER_NAME = os.environ.get("TTS_PROVIDER", "edge-tts")
+
 VOICE = os.environ.get("TTS_VOICE", "ru-RU-SvetlanaNeural")
 RATE = os.environ.get("TTS_RATE", "+0%")
 PITCH = os.environ.get("TTS_PITCH", "+0Hz")
+
+OPENAI_MODEL = os.environ.get("OPENAI_TTS_MODEL", "tts-1")
+OPENAI_VOICE = os.environ.get("OPENAI_TTS_VOICE", "nova")
+
+
+def _parse_speed(raw: str) -> float:
+    # A bad value here would otherwise crash module import → launchd would loop
+    # restarts forever. Match the unknown-TTS_PROVIDER fallback below: log and
+    # use the safe default.
+    try:
+        return float(raw)
+    except ValueError:
+        print(
+            f"[tts] invalid OPENAI_TTS_SPEED={raw!r}, using 1.0",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1.0
+
+
+OPENAI_SPEED = _parse_speed(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
+
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
 
 LOCK_FILE = os.environ.get("TTS_LOCK_FILE", "/tmp/nl-recording.lock")
@@ -49,6 +80,28 @@ STATE_FILE = os.environ.get(
     "TTS_STATE_FILE",
     os.path.expanduser("~/.config/claude-code-tts/enabled"),
 )
+
+
+def _make_provider() -> TTSProvider:
+    if PROVIDER_NAME == "openai":
+        return OpenAIProvider(
+            model=OPENAI_MODEL,
+            voice=OPENAI_VOICE,
+            speed=OPENAI_SPEED,
+            api_key=keychain.get_openai_key(),
+        )
+    # Unknown values fall through to edge-tts so a typo in TTS_PROVIDER doesn't
+    # brick the server — just log and use the free default.
+    if PROVIDER_NAME != "edge-tts":
+        print(
+            f"[tts] unknown TTS_PROVIDER={PROVIDER_NAME!r}, falling back to edge-tts",
+            file=sys.stderr,
+            flush=True,
+        )
+    return EdgeTTSProvider(voice=VOICE, rate=RATE, pitch=PITCH)
+
+
+PROVIDER: TTSProvider = _make_provider()
 
 
 def _is_locked() -> bool:
@@ -82,11 +135,6 @@ def _stop_current() -> None:
     _current_tmp = None
 
 
-async def _synthesize(text: str, path: str) -> None:
-    communicate = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
-    await communicate.save(path)
-
-
 def _speak(text: str) -> tuple[int, str]:
     cleaned = clean_for_tts(text, max_chars=MAX_CHARS)
     if not cleaned:
@@ -100,15 +148,20 @@ def _speak(text: str) -> tuple[int, str]:
     os.close(fd)
 
     try:
-        asyncio.run(_synthesize(cleaned, tmp_path))
-    except Exception as e:
-        log(f"edge-tts failure: {e}")
+        asyncio.run(PROVIDER.synthesize(cleaned, tmp_path))
+    except ProviderError as e:
+        log(str(e))
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        return 502, f"edge-tts error: {e}"
+        return 502, str(e)
+    except Exception as e:
+        log(f"provider failure: {e}")
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return 502, f"provider error: {e}"
 
     # ⚠️ WARNING: re-check lock AFTER synthesis — a recording may have started
-    # during the ~1s edge-tts call. Drop the MP3 instead of bleeding into the mic.
+    # during the ~1s provider call. Drop the MP3 instead of bleeding into the mic.
     if _is_locked():
         log(f"dropping post-synthesis playback: lock appeared at {LOCK_FILE}")
         try:
@@ -132,7 +185,7 @@ def _speak(text: str) -> tuple[int, str]:
             os.unlink(tmp_path)
             return 500, "afplay missing"
 
-    log(f"speaking {len(cleaned)} chars with {VOICE}")
+    log(f"speaking {len(cleaned)} chars via {PROVIDER.name}")
     return 202, cleaned[:80]
 
 
@@ -154,9 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "ok": True,
-                    "voice": VOICE,
-                    "rate": RATE,
-                    "pitch": PITCH,
+                    "config": PROVIDER.describe(),
                     "lock_file": LOCK_FILE,
                     "respect_lock": RESPECT_LOCK,
                     "locked": _is_locked(),
@@ -165,8 +216,10 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/":
+            cfg = PROVIDER.describe()
             msg = (
-                f"Claude Code TTS server. Voice={VOICE} Rate={RATE} Pitch={PITCH}.\n"
+                f"Claude Code TTS server. provider={cfg.get('provider')} "
+                f"voice={cfg.get('voice')}.\n"
                 'POST /speak {"text": "..."} | POST /stop | GET /health\n'
             )
             body = msg.encode("utf-8")
@@ -219,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    log(f"listening on http://{HOST}:{PORT} (voice={VOICE})")
+    log(f"listening on http://{HOST}:{PORT} (provider={PROVIDER.name})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

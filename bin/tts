@@ -1,7 +1,11 @@
 #!/bin/bash
 # Claude Code TTS control CLI.
-# Subcommands: on | off | toggle | status | test | restart | install | uninstall | logs | voice | rate | pitch | voices
+# Two providers: edge-tts (default, free) and openai (paid, key from Keychain).
+# edge-tts knobs: voice, rate, pitch.  openai knobs: openai-voice, openai-model, speed.
 set -euo pipefail
+
+KEYCHAIN_SERVICE="claude-code-tts"
+KEYCHAIN_ACCOUNT_OPENAI="openai"
 
 # Resolve symlinks so the CLI works when invoked via ~/.local/bin/tts too.
 _self="$0"
@@ -208,11 +212,88 @@ cmd_voices() {
   "$py" -c 'import asyncio, edge_tts; voices = asyncio.run(edge_tts.list_voices()); [print(v["ShortName"], "—", v.get("Gender",""), v.get("Locale","")) for v in voices if v["Locale"].startswith(("ru","en"))]'
 }
 
+cmd_provider() {
+  local name="${1:?usage: tts provider <edge-tts|openai>}"
+  case "$name" in
+    edge-tts|openai) ;;
+    *) echo "error: provider must be 'edge-tts' or 'openai'" >&2; return 2 ;;
+  esac
+  _update_env TTS_PROVIDER "$name" && echo "provider: $name (server restarted)"
+}
+
+cmd_openai_key() {
+  local key
+  printf "OpenAI API key: "
+  IFS= read -rs key
+  echo
+  if [[ -z "$key" ]]; then
+    echo "error: empty key, nothing stored" >&2
+    return 2
+  fi
+  # Pipe key via stdin (trailing -w with no value) so it never appears in argv —
+  # `ps` listings would otherwise expose it to any same-UID process.
+  printf '%s' "$key" \
+    | security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" -w \
+    && echo "OpenAI key stored in Keychain (service=$KEYCHAIN_SERVICE account=$KEYCHAIN_ACCOUNT_OPENAI)"
+  if health_ok; then
+    _reload_agent && echo "server restarted (key reloaded)"
+  fi
+}
+
+cmd_openai_key_clear() {
+  if security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" 2>/dev/null; then
+    echo "OpenAI key removed from Keychain"
+  else
+    echo "no OpenAI key was stored"
+  fi
+  if health_ok; then
+    _reload_agent && echo "server restarted"
+  fi
+}
+
+cmd_openai_voice() {
+  local name="${1:?usage: tts openai-voice <name> (e.g. nova, alloy, echo)}"
+  _update_env OPENAI_TTS_VOICE "$name" && echo "openai voice: $name (server restarted)"
+}
+
+cmd_openai_model() {
+  local name="${1:?usage: tts openai-model <tts-1|tts-1-hd|gpt-4o-mini-tts>}"
+  case "$name" in
+    tts-1|tts-1-hd|gpt-4o-mini-tts) ;;
+    *) echo "error: unknown model '$name' (expected tts-1, tts-1-hd, or gpt-4o-mini-tts)" >&2; return 2 ;;
+  esac
+  _update_env OPENAI_TTS_MODEL "$name" && echo "openai model: $name (server restarted)"
+}
+
+cmd_speed() {
+  local value="${1:?usage: tts speed <value>  (0.25 to 4.0, e.g. 1.25)}"
+  if [[ ! "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "error: speed must be a positive number (e.g. 0.9, 1.25, 2.0)" >&2
+    return 2
+  fi
+  # OpenAI accepts 0.25–4.0; bounds-check here so errors surface before restart.
+  awk -v v="$value" 'BEGIN{ if (v+0 < 0.25 || v+0 > 4.0) exit 1 }' || {
+    echo "error: speed must be between 0.25 and 4.0" >&2
+    return 2
+  }
+  _update_env OPENAI_TTS_SPEED "$value" && echo "openai speed: $value (server restarted)"
+}
+
+cmd_openai_voices() {
+  cat <<'EOF'
+OpenAI TTS voices (11):
+  alloy  ash  ballad  coral  echo  fable  nova  onyx  sage  shimmer  verse
+Switch with: tts openai-voice <name>
+EOF
+}
+
 cmd_reset() {
+  # Resets edge-tts knobs only. Does not touch TTS_PROVIDER, OpenAI settings,
+  # or the Keychain-stored key.
   _set_env_value TTS_VOICE "ru-RU-SvetlanaNeural" || return 1
   _set_env_value TTS_RATE  "+0%"                  || return 1
   _set_env_value TTS_PITCH "+0Hz"                 || return 1
-  _reload_agent && echo "reset: voice=ru-RU-SvetlanaNeural, rate=+0%, pitch=+0Hz"
+  _reload_agent && echo "reset: voice=ru-RU-SvetlanaNeural, rate=+0%, pitch=+0Hz (edge-tts knobs only)"
 }
 
 cmd_config() {
@@ -221,14 +302,25 @@ cmd_config() {
     return 1
   fi
   echo "Config from $PLIST"
-  echo "(edit with 'tts voice|rate|pitch|reset' or PlistBuddy + 'tts restart')"
+  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed' or PlistBuddy + 'tts restart')"
   echo
-  local keys=(TTS_VOICE TTS_RATE TTS_PITCH TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH)
+  local keys=(
+    TTS_PROVIDER
+    TTS_VOICE TTS_RATE TTS_PITCH
+    OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED
+    TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
+  )
   local key val
   for key in "${keys[@]}"; do
     val=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST" 2>/dev/null || echo "(unset)")
     printf "  %-18s = %s\n" "$key" "$val"
   done
+  echo
+  if security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
+    echo "  OpenAI key         = (stored in Keychain)"
+  else
+    echo "  OpenAI key         = (not stored — run: tts openai-key)"
+  fi
 }
 
 cmd_update() {
@@ -285,8 +377,13 @@ cmd_doctor() {
   fi
 
   echo
-  echo "== venv + edge-tts =="
+  echo "== venv + providers =="
   local venv_py="$REPO_DIR/venv/bin/python"
+  local active_provider="edge-tts"
+  if [[ -f "$PLIST" ]]; then
+    active_provider=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:TTS_PROVIDER" "$PLIST" 2>/dev/null || echo "edge-tts")
+  fi
+  _ok "active provider: $active_provider"
   if [[ -x "$venv_py" ]]; then
     _ok "venv python: $venv_py"
     if "$venv_py" -c 'import edge_tts; print(edge_tts.__version__)' 2>/dev/null >/dev/null; then
@@ -295,6 +392,26 @@ cmd_doctor() {
       _ok "edge-tts importable (version $v)"
     else
       _fail "edge-tts not importable — run: tts install"
+    fi
+    if "$venv_py" -c 'import openai; print(openai.__version__)' 2>/dev/null >/dev/null; then
+      local ov
+      ov=$("$venv_py" -c 'import openai; print(openai.__version__)')
+      _ok "openai importable (version $ov)"
+    else
+      if [[ "$active_provider" == "openai" ]]; then
+        _fail "openai not importable but provider=openai — run: tts update"
+      else
+        _warn "openai not importable (ok — provider is $active_provider; run 'tts update' to install)"
+      fi
+    fi
+    if security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
+      _ok "OpenAI key present in Keychain"
+    else
+      if [[ "$active_provider" == "openai" ]]; then
+        _fail "OpenAI key missing from Keychain — run: tts openai-key"
+      else
+        _warn "OpenAI key not stored (ok — provider is $active_provider)"
+      fi
     fi
   else
     _fail "venv missing — run: tts install"
@@ -408,23 +525,30 @@ cmd_doctor() {
 # Adding a new command means: (1) a cmd_<name> function, (2) an entry here.
 # usage() and dispatch are generated from this — no three-place edits.
 COMMANDS=(
-  on       "Enable TTS and (re)start the server"
-  off      "Disable TTS and stop current playback"
-  toggle   "Toggle on/off"
-  status   "Show enabled flag + server + launchd state"
-  test     "[text]  Synthesize and play a phrase (default: greeting)"
-  restart  "Kick the launchd agent to restart the server"
-  logs     "Tail server log"
-  voice    "<name>  Switch voice (e.g. ru-RU-DmitryNeural) and restart"
-  rate     "<val>   Set speech rate (e.g. +15%, -10%) and restart"
-  pitch    "<val>   Set pitch (e.g. +50Hz, -20Hz) and restart"
-  reset    "Restore voice/rate/pitch to defaults (single restart)"
-  config   "Print current env values from plist"
-  voices   "List available ru/en voices from edge-tts"
-  update   "git pull --rebase + install.sh (upgrade to latest)"
-  doctor   "Diagnose setup: deps, venv, plist, hooks, port, state"
-  install  "Run installer (creates venv, installs plist, patches settings.json)"
-  uninstall "Run uninstaller (reverse of install; --purge wipes state/venv)"
+  on               "Enable TTS and (re)start the server"
+  off              "Disable TTS and stop current playback"
+  toggle           "Toggle on/off"
+  status           "Show enabled flag + server + launchd state"
+  test             "[text]  Synthesize and play a phrase (default: greeting)"
+  restart          "Kick the launchd agent to restart the server"
+  logs             "Tail server log"
+  provider         "<edge-tts|openai>  Switch TTS provider and restart"
+  voice            "<name>  [edge-tts] Switch voice (e.g. ru-RU-DmitryNeural) and restart"
+  rate             "<val>   [edge-tts] Set speech rate (e.g. +15%, -10%) and restart"
+  pitch            "<val>   [edge-tts] Set pitch (e.g. +50Hz, -20Hz) and restart"
+  voices           "[edge-tts] List available ru/en voices"
+  openai-key       "[openai]  Prompt for and store the OpenAI API key in Keychain"
+  openai-key-clear "[openai]  Remove the OpenAI API key from Keychain"
+  openai-voice     "<name>  [openai] Switch OpenAI voice (e.g. nova, alloy) and restart"
+  openai-model     "<name>  [openai] Switch OpenAI model (tts-1|tts-1-hd|gpt-4o-mini-tts)"
+  openai-voices    "[openai]  List available OpenAI voices"
+  speed            "<val>   [openai] Set speech speed 0.25–4.0 (e.g. 1.25) and restart"
+  reset            "Restore edge-tts voice/rate/pitch to defaults (single restart)"
+  config           "Print current env values from plist"
+  update           "git pull --rebase + install.sh (upgrade to latest)"
+  doctor           "Diagnose setup: deps, venv, plist, hooks, port, state"
+  install          "Run installer (creates venv, installs plist, patches settings.json)"
+  uninstall        "Run uninstaller (reverse of install; --purge wipes state/venv)"
 )
 
 _command_exists() {
@@ -440,7 +564,7 @@ usage() {
   echo
   local i
   for ((i = 0; i < ${#COMMANDS[@]}; i += 2)); do
-    printf "  %-10s %s\n" "${COMMANDS[$i]}" "${COMMANDS[$i + 1]}"
+    printf "  %-18s %s\n" "${COMMANDS[$i]}" "${COMMANDS[$i + 1]}"
   done
   cat <<EOF
 
