@@ -89,6 +89,9 @@ def openai_server(monkeypatch, tmp_path):
     monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
     monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
     monkeypatch.setenv("TTS_PROVIDER", "openai")
+    # This fixture tests the openai speak path; bypass the TL;DR gate so
+    # payloads without a TL;DR block still reach the provider.
+    monkeypatch.setenv("TTS_TLDR_ONLY", "0")
 
     import claude_code_tts.keychain as keychain_mod
 
@@ -151,6 +154,9 @@ def openai_server_no_key(monkeypatch, tmp_path):
     monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
     monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
     monkeypatch.setenv("TTS_PROVIDER", "openai")
+    # This fixture tests the openai speak path; bypass the TL;DR gate so
+    # payloads without a TL;DR block still reach the provider.
+    monkeypatch.setenv("TTS_TLDR_ONLY", "0")
 
     import claude_code_tts.keychain as keychain_mod
 
@@ -194,6 +200,9 @@ def test_health_endpoint(server):
     assert data["config"]["provider"] == "edge-tts"
     assert "voice" in data["config"]
     assert data["locked"] is False
+    # Main fixture disables TLDR-only; verify the flag is reflected in /health
+    # so `tts doctor`/`status` can observe either mode symmetrically.
+    assert data["tldr_only"] is False
 
 
 def test_speak_with_mocked_edge_tts(server):
@@ -359,3 +368,17 @@ def test_tldr_only_silent_without_marker(tldr_server):
     )
     assert status == 204
     assert body == b""
+
+
+def test_tldr_only_skip_logs_preview(tldr_server, capfd):
+    """On TL;DR-only skip the server must log a preview of the rejected text
+    so users can tell which message was dropped (observability gap from review)."""
+    msg = "Это начало отброшенного сообщения без итогового блока — продолжение тут."
+    status, _ = _request(tldr_server["port"], "POST", "/speak", {"text": msg})
+    assert status == 204
+    # log() writes to stderr with a '[tts]' prefix; capfd captures even when
+    # afplay is stubbed. Preview must mention 'skipping' and include the first
+    # chars of the rejected message.
+    err = capfd.readouterr().err
+    assert "skipping playback" in err
+    assert "Это начало" in err

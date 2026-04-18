@@ -145,11 +145,13 @@ def _speak(text: str) -> tuple[int, str]:
     if TLDR_ONLY:
         tldr = extract_tldr(text)
         if tldr is None:
-            log("no TL;DR block found; skipping playback (TTS_TLDR_ONLY=1)")
+            log(f"no TL;DR block found; skipping playback (TTS_TLDR_ONLY=1); preview={text[:80]!r}")
             return 204, ""
-        text = tldr
+        body_to_speak = tldr
+    else:
+        body_to_speak = text
 
-    cleaned = clean_for_tts(text, max_chars=MAX_CHARS)
+    cleaned = clean_for_tts(body_to_speak, max_chars=MAX_CHARS)
     if not cleaned:
         return 204, ""
 
