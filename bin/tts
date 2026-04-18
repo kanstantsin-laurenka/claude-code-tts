@@ -147,7 +147,8 @@ cmd_logs() {
   tail -n 50 -f "$log"
 }
 
-_update_env() {
+# Write one key into plist's EnvironmentVariables dict (no restart).
+_set_env_value() {
   local key="$1" value="$2"
   if [[ ! -f "$PLIST" ]]; then
     echo "error: plist missing, run: tts install" >&2
@@ -155,6 +156,10 @@ _update_env() {
   fi
   /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:$key $value" "$PLIST" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:$key string $value" "$PLIST"
+}
+
+# Bootout + bootstrap launchd agent, wait for /health.
+_reload_agent() {
   launchctl bootout "$DOMAIN" "$PLIST" 2>/dev/null || true
   launchctl bootstrap "$DOMAIN" "$PLIST"
   for _ in 1 2 3 4 5 6; do
@@ -163,8 +168,12 @@ _update_env() {
     fi
     sleep 0.5
   done
-  echo "set $key=$value, but server not responding yet — check: tts logs" >&2
+  echo "server not responding yet — check: tts logs" >&2
   return 1
+}
+
+_update_env() {
+  _set_env_value "$1" "$2" && _reload_agent
 }
 
 cmd_voice() {
@@ -199,6 +208,43 @@ cmd_voices() {
   "$py" -c 'import asyncio, edge_tts; voices = asyncio.run(edge_tts.list_voices()); [print(v["ShortName"], "—", v.get("Gender",""), v.get("Locale","")) for v in voices if v["Locale"].startswith(("ru","en"))]'
 }
 
+cmd_reset() {
+  _set_env_value TTS_VOICE "ru-RU-SvetlanaNeural" || return 1
+  _set_env_value TTS_RATE  "+0%"                  || return 1
+  _set_env_value TTS_PITCH "+0Hz"                 || return 1
+  _reload_agent && echo "reset: voice=ru-RU-SvetlanaNeural, rate=+0%, pitch=+0Hz"
+}
+
+cmd_config() {
+  if [[ ! -f "$PLIST" ]]; then
+    echo "plist missing, run: tts install" >&2
+    return 1
+  fi
+  echo "Config from $PLIST"
+  echo "(edit with 'tts voice|rate|pitch|reset' or PlistBuddy + 'tts restart')"
+  echo
+  local keys=(TTS_VOICE TTS_RATE TTS_PITCH TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH)
+  local key val
+  for key in "${keys[@]}"; do
+    val=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST" 2>/dev/null || echo "(unset)")
+    printf "  %-18s = %s\n" "$key" "$val"
+  done
+}
+
+cmd_update() {
+  if ! git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "error: $REPO_DIR is not a git checkout — can't update" >&2
+    return 1
+  fi
+  echo "→ git pull --rebase in $REPO_DIR"
+  if ! git -C "$REPO_DIR" pull --rebase; then
+    echo "update: git pull failed (resolve conflicts, then re-run)" >&2
+    return 1
+  fi
+  echo "→ running install.sh"
+  bash "$REPO_DIR/install.sh"
+}
+
 usage() {
   cat <<EOF
 Usage: tts <command>
@@ -215,7 +261,10 @@ Usage: tts <command>
   voice <name>    Switch voice (e.g. ru-RU-DmitryNeural) and restart
   rate <val>      Set speech rate (e.g. +15%, -10%) and restart
   pitch <val>     Set pitch (e.g. +50Hz, -20Hz) and restart
+  reset           Restore voice/rate/pitch to defaults (single restart)
+  config          Print current env values from plist
   voices          List available ru/en voices from edge-tts
+  update          git pull --rebase + install.sh (upgrade to latest)
 
 Files:
   flag:    $TTS_FLAG
@@ -240,7 +289,10 @@ case "$cmd" in
   voice)     cmd_voice "$@" ;;
   rate)      cmd_rate "$@" ;;
   pitch)     cmd_pitch "$@" ;;
+  reset)     cmd_reset "$@" ;;
+  config)    cmd_config "$@" ;;
   voices)    cmd_voices "$@" ;;
+  update)    cmd_update "$@" ;;
   -h|--help|help) usage ;;
   *) echo "unknown command: $cmd" >&2; usage; exit 2 ;;
 esac

@@ -9,8 +9,10 @@ All knobs live as environment variables in the launchd plist at `~/Library/Launc
 | `tts voice <name>` | `TTS_VOICE=<name>` | none (edge-tts accepts any id) |
 | `tts rate <value>` | `TTS_RATE=<value>` | must match `^[+-]\d+%$` |
 | `tts pitch <value>` | `TTS_PITCH=<value>` | must match `^[+-]\d+Hz$` |
+| `tts reset` | Restore voice/rate/pitch to defaults | — |
+| `tts config` | Print current env values from the plist | — |
 
-After each change the launchd agent is `bootout`-ed and `bootstrap`-ed, and the CLI waits up to 3 s for `/health` before returning.
+After each change the launchd agent is `bootout`-ed and `bootstrap`-ed, and the CLI waits up to 3 s for `/health` before returning. `tts reset` writes all three keys then reloads once (not three times).
 
 ## Manual knobs
 

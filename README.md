@@ -46,7 +46,10 @@ tts logs            tail -f server log
 tts voice <name>    Switch voice (e.g. ru-RU-DmitryNeural, en-US-AriaNeural)
 tts rate <val>      Set speech rate (e.g. +15%, -10%)
 tts pitch <val>     Set pitch (e.g. +50Hz, -20Hz)
+tts reset           Restore voice/rate/pitch to defaults (single restart)
+tts config          Print current env values from the plist
 tts voices          List ru/en voices from edge-tts
+tts update          git pull --rebase + install.sh (upgrade from remote)
 tts install         Re-run installer
 tts uninstall       Remove the installation (add --purge to wipe state/venv)
 ```
@@ -77,12 +80,20 @@ All runtime parameters come from environment variables set in the launchd plist.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for details and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full data flow.
 
+## Upgrade
+
+```bash
+tts update       # git pull --rebase, then install.sh
+```
+
 ## Development
 
 ```bash
 venv/bin/pip install -r requirements-dev.txt
 venv/bin/pytest tests/ -v
 ```
+
+GitHub Actions runs `pytest` on every push across Python 3.10 / 3.11 / 3.12 / 3.13 — see [`.github/workflows/test.yml`](.github/workflows/test.yml).
 
 ## Status
 
