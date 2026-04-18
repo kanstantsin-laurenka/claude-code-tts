@@ -3,9 +3,9 @@ Server tests — mock edge_tts.Communicate and afplay so tests don't need networ
 or audio output. A fresh ThreadingHTTPServer is spun per-test on a random port
 to avoid interference with the live launchd-managed server on 7852.
 """
+
 import importlib
 import json
-import os
 import socket
 import threading
 import time
@@ -33,10 +33,13 @@ def server(monkeypatch, tmp_path):
 
     # Ensure fresh module read picks up env vars.
     import claude_code_tts.server as srv
+
     importlib.reload(srv)
 
     class FakeCommunicate:
-        def __init__(self, *a, **kw): pass
+        def __init__(self, *a, **kw):
+            pass
+
         async def save(self, path):
             Path(path).write_bytes(b"\x00")  # empty MP3 placeholder
 
@@ -44,10 +47,12 @@ def server(monkeypatch, tmp_path):
 
     # afplay → `true` so we don't make noise and Popen exits immediately.
     _orig_popen = srv.subprocess.Popen
+
     def _fake_popen(args, **kw):
         if args and args[0] == "afplay":
             args = ["true"]
         return _orig_popen(args, **kw)
+
     monkeypatch.setattr(srv.subprocess, "Popen", _fake_popen)
 
     httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
@@ -117,3 +122,28 @@ def test_missing_text_returns_400(server):
 def test_stop_endpoint(server):
     status, _ = _request(server["port"], "POST", "/stop")
     assert status == 200
+
+
+def test_invalid_json_returns_400(server):
+    conn = HTTPConnection("127.0.0.1", server["port"], timeout=3)
+    conn.request(
+        "POST",
+        "/speak",
+        body=b"{not json",
+        headers={"Content-Type": "application/json", "Content-Length": "9"},
+    )
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    assert resp.status == 400
+    assert "invalid" in json.loads(body)["error"].lower()
+
+
+def test_empty_body_returns_400(server):
+    status, body = _request(server["port"], "POST", "/speak")
+    assert status == 400
+
+
+def test_unknown_path_returns_404(server):
+    status, _ = _request(server["port"], "GET", "/nope")
+    assert status == 404

@@ -19,6 +19,7 @@ Dependencies: edge-tts (pip); afplay (macOS built-in).
 Related: hooks/tts-stop.sh, ~/.claude/settings.json (Stop hook),
          /tmp/nl-recording.lock (written by Hammerspoon STT config in TTS2 project).
 """
+
 import asyncio
 import json
 import os
@@ -32,7 +33,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import edge_tts
 
 from .clean_text import clean_for_tts
-
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TTS_PORT", "7852"))
@@ -167,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             msg = (
                 f"Claude Code TTS server. Voice={VOICE} Rate={RATE} Pitch={PITCH}.\n"
-                "POST /speak {\"text\": \"...\"} | POST /stop | GET /health\n"
+                'POST /speak {"text": "..."} | POST /stop | GET /health\n'
             )
             body = msg.encode("utf-8")
             self.send_response(200)
