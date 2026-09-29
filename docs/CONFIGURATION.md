@@ -4,16 +4,18 @@ All knobs live as environment variables in the launchd plist at `~/Library/Launc
 
 ## Providers
 
-The server supports two synthesis backends. Exactly one is active at a time; switch with `tts provider`.
+The server supports three synthesis backends. Exactly one is active at a time; switch with `tts provider`.
 
 | Provider | Default | Cost | Needs network | Needs key |
 |---|---|---|---|---|
 | `edge-tts` | yes | free | yes (Microsoft endpoint) | no |
 | `openai` | no | paid | yes (OpenAI API) | yes (macOS Keychain) |
+| `google` | no | free up to 1M chars/month, then paid | yes (Google Cloud TTS) | yes (macOS Keychain) |
 
 ```bash
 tts provider edge-tts    # free Microsoft neural voices (default)
 tts provider openai      # OpenAI TTS API (requires: tts openai-key)
+tts provider google      # Google Chirp 3 HD (requires: tts google-key)
 ```
 
 `TTS_PROVIDER` is the underlying env var. Unknown values fall back to `edge-tts` with a log line.
@@ -41,9 +43,9 @@ Defaults: `ru-RU-SvetlanaNeural`, `+0%`, `+0Hz`.
 | `tts speed <value>` | set playback speed (0.25–4.0) | `OPENAI_TTS_SPEED` |
 | `tts openai-voices` | list OpenAI voices | — |
 
-Defaults: model `tts-1`, voice `nova`, speed `1.0`.
+Defaults: model `gpt-4o-mini-tts`, voice `nova`, speed `1.0`.
 
-**API key:** stored in the macOS Keychain under service `claude-code-tts`, account `openai`. The server reads it at launch time by invoking `security find-generic-password`; the key never appears in the plist, logs, or `/health` output. Running `tts openai-key` again overwrites the existing entry.
+**API key:** stored in the macOS Keychain under service `claude-code-tts`, account `openai`. The server reads it at launch time by invoking `security find-generic-password`; the key never appears in the plist, logs, or `/health` output. Running `tts openai-key` when a key already exists asks `key already stored, replace? [y/N]` first. The key is typed at a hidden prompt shown by `security` itself (asked twice), so it never appears in `ps`; afterwards its shape is checked (`sk-…`, 40+ chars) and a malformed key only produces a warning.
 
 **Voices (11):** `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`.
 
@@ -54,9 +56,65 @@ Defaults: model `tts-1`, voice `nova`, speed `1.0`.
 
 Authoritative pricing: [OpenAI API pricing](https://openai.com/api/pricing/).
 
-**`rate`/`pitch` are edge-tts-only; `speed` is openai-only.** The CLI does not prevent you from setting a knob for the inactive provider — it just won't have any effect until you switch to that provider.
+**`rate`/`pitch` are edge-tts-only; `speed` is openai-only; `google-speed` is google-only.** The CLI does not prevent you from setting a knob for the inactive provider — it just won't have any effect until you switch to that provider.
 
-**Error behavior:** if an OpenAI call fails (auth, rate limit, no network, no key), the server returns HTTP 502 to the Stop hook, which swallows it silently. There is **no** automatic fallback to edge-tts.
+**Error behavior:** if an OpenAI call fails (auth, rate limit, no network, no key), the server returns HTTP 502 to the Stop hook, which swallows it silently. The `openai` provider has **no** automatic fallback to edge-tts (the `google` provider does — see below).
+
+### google knobs
+
+Google Cloud Text-to-Speech with Chirp 3 HD voices. The free tier is 1,000,000 characters per month; going over is billed. Google Cloud spend caps do not support Text-to-Speech, so a **local monthly character counter** is the guard: it warns you as usage grows and switches to edge-tts before the limit can be exceeded.
+
+| Command | Effect | Env var |
+|---|---|---|
+| `tts google-key` | prompt for and store the API key in Keychain | — |
+| `tts google-key-clear` | remove stored key from Keychain | — |
+| `tts google-voice <name>` | set voice (`ru-RU-Chirp3-HD-Aoede`, `en-US-Chirp3-HD-Puck`, …) | `GOOGLE_TTS_VOICE` |
+| `tts google-speed <value>` | set speaking rate (0.25–2.0) | `GOOGLE_TTS_SPEED` |
+| — | monthly limit (see below) | `GOOGLE_TTS_MONTHLY_CHAR_LIMIT` |
+| — | usage counter file | `GOOGLE_TTS_USAGE_FILE` |
+
+Defaults: voice `ru-RU-Chirp3-HD-Aoede`, speed `1.0`, limit `990000`, usage file `~/.config/claude-code-tts/google-usage.json`. Chirp 3 HD has no pitch control. The language code is derived from the voice name (`ru-RU-…` → `ru-RU`).
+
+**API key:** Keychain service `claude-code-tts`, account `google`; same prompt flow as `tts openai-key`. Expected shape: `AIza…`, about 39 chars (the check accepts 35–45). Send it as the `X-Goog-Api-Key` header only; it is never put in a URL, log line, or `/health`.
+
+**What the numbers mean**
+
+| Term | Meaning |
+|---|---|
+| Free tier | Google's 1,000,000 chars/month. Google's number; our code never changes it. |
+| Used | Characters this app sent to Google in the current month: the text after cleanup/TL;DR, plus any appended warning phrase. Counted *before* the API call. Refunded if the call fails in a way Google does not bill (connection error, HTTP 4xx such as a bad key or 429); **not** refunded for 5xx, read timeouts or bad responses, which may have been billed. |
+| Limit / switch threshold | `GOOGLE_TTS_MONTHLY_CHAR_LIMIT`, default **990,000**. The 10,000-char margin absorbs drift between our count and Google's accounting. |
+| Warning percentages | Percent of the *limit* (990,000), not of 1,000,000. |
+| Month | Calendar month in America/Los_Angeles (Pacific Time); the counter resets when that month changes. |
+
+| Event | Trigger (% of 990k) | Used at trigger | Remaining to 990k | Remaining to Google's 1M |
+|---|---|---|---|---|
+| Warning 1 (once/month) | ≥ 80% | 792,000 | 198,000 | 208,000 |
+| Warning 2 (once/month) | ≥ 90% | 891,000 | 99,000 | 109,000 |
+| Critical (every message) | ≥ 98% | 970,200 | 19,800 | 29,800 |
+| Switch to edge-tts | used + len(text) > 990,000 | ≤ 990,000 | 0 | 10,000 |
+
+Each warning is a macOS notification plus a spoken phrase appended to the message (Russian text). The spoken "remaining" figure is characters left until the *switch*, rounded (nearest 10 under 1,000; nearest 100 under 10,000; otherwise nearest 1,000).
+
+**Switching is sticky.** The first request that does not fit under the limit sets an `exhausted` flag; every later request that month goes to edge-tts (no flip-flopping between voices) until the Pacific month rolls over. One notification and one spoken notice announce the switch.
+
+**Fallback to edge-tts** (uses `TTS_VOICE`/`TTS_RATE`/`TTS_PITCH`) also happens, on the same request, when: Google fails for any reason (network, 4xx/5xx, 429, timeout, bad response); the Google key is missing; or the text is over 5000 UTF-8 bytes (Cyrillic is 2 bytes per char). Missing key and oversize text are detected before counting, so they cost no quota. Failure-based fallbacks do **not** show a notification — you hear the voice change. `/health` (and `tts status`) show `fallback_count` and `last_fallback` (reason + time; kept in memory, reset on restart).
+
+**Usage file** (schema v1):
+
+```json
+{"version": 1, "month": "2026-09", "chars": 123456, "flags": ["warn_80", "warn_90", "exhausted"]}
+```
+
+It is re-read on every request, so deleting it resets the counter immediately, no restart needed:
+
+```bash
+rm ~/.config/claude-code-tts/google-usage.json
+```
+
+A corrupt file is renamed to `google-usage.json.corrupt` and counting restarts from 0. `uninstall.sh --purge` deletes it along with the rest of `~/.config/claude-code-tts`.
+
+**Caveats:** one-shot warnings (80%/90%/switch) are marked as delivered when the request is counted. If that audio is then dropped (microphone lock, or a newer message interrupts it) the spoken phrase is not repeated that month; the notification still appears. The local count can drift from Google's real billing (other clients using the same key, a deleted usage file, no refunds for 5xx/timeouts that may have been billed). The margin absorbs small drift only; keep the $5 budget alert on the Google Cloud billing account as a second line of defense.
 
 ## Manual knobs
 
@@ -85,6 +143,7 @@ tts voices                      # edge-tts: ru/en voices
 tts voice ru-RU-DmitryNeural    # edge-tts: male Russian
 tts openai-voices               # openai: full list
 tts openai-voice nova           # openai: warm female
+tts google-voice ru-RU-Chirp3-HD-Aoede   # google: Chirp 3 HD
 ```
 
 edge-tts full list (hundreds of locales): run `tts voices` without filters, or see [edge-tts voice samples](https://tts.travisvn.com/).

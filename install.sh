@@ -75,10 +75,11 @@ fi
 # 6. Render launchd plist (preserve user-set EnvironmentVariables across re-install)
 #
 # Re-running install.sh (directly or via `tts update`) used to stomp the whole
-# plist, wiping knobs that `tts provider|voice|rate|pitch|openai-*|speed|tldr`
+# plist, wiping knobs that `tts provider|voice|rate|pitch|openai-*|speed|google-*|tldr`
 # had written to EnvironmentVariables. Users had to reconfigure everything
 # after each update. Now: capture existing EnvironmentVariables, render the
-# fresh template, then overlay captured values on top.
+# fresh template, then overlay captured values on top. The overlay is generic,
+# so new keys (e.g. GOOGLE_TTS_*) survive without any change here.
 #
 # PYTHONPATH and PATH are re-rendered from the template because they're
 # derived from $REPO_DIR — overlaying a stale value would break the server

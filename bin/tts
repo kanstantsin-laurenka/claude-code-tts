@@ -1,11 +1,15 @@
 #!/bin/bash
 # Claude Code TTS control CLI.
-# Two providers: edge-tts (default, free) and openai (paid, key from Keychain).
+# Three providers: edge-tts (default, free), openai (paid, key from Keychain) and
+# google (Chirp 3 HD, free tier guarded by a local monthly char counter, key from Keychain).
 # edge-tts knobs: voice, rate, pitch.  openai knobs: openai-voice, openai-model, speed.
+# google knobs: google-voice, google-speed.
 set -euo pipefail
 
 KEYCHAIN_SERVICE="claude-code-tts"
 KEYCHAIN_ACCOUNT_OPENAI="openai"
+KEYCHAIN_ACCOUNT_GOOGLE="google"
+GOOGLE_USAGE_FILE_DEFAULT="$HOME/.config/claude-code-tts/google-usage.json"
 
 # Resolve symlinks so the CLI works when invoked via ~/.local/bin/tts too.
 _self="$0"
@@ -93,6 +97,24 @@ cmd_status() {
     locked=$(echo "$info" | jq -r '.locked // false')
     if [[ "$locked" == "true" ]]; then
       echo "lock:    ACTIVE (microphone recording — TTS suppressed)"
+    fi
+    # The usage block exists only when provider=google; `// empty` keeps the
+    # lines out for other providers (and for an older server without the field).
+    local g_used g_limit g_pct g_month g_reason g_at
+    g_used=$(echo "$info" | jq -r '.config.usage.used // empty' 2>/dev/null || true)
+    if [[ -n "$g_used" ]]; then
+      g_limit=$(echo "$info" | jq -r '.config.usage.limit // empty' 2>/dev/null || true)
+      g_pct=$(echo "$info" | jq -r '.config.usage.percent // empty' 2>/dev/null || true)
+      g_month=$(echo "$info" | jq -r '.config.usage.month // empty' 2>/dev/null || true)
+      echo "google:  ${g_used}/${g_limit} chars (${g_pct}%) month=${g_month} (Pacific)"
+      if echo "$info" | jq -e '(.config.usage.flags // []) | index("exhausted")' >/dev/null 2>&1; then
+        echo "google:  exhausted -> edge-tts until next month"
+      fi
+      g_reason=$(echo "$info" | jq -r '.config.last_fallback.reason // empty' 2>/dev/null || true)
+      if [[ -n "$g_reason" ]]; then
+        g_at=$(echo "$info" | jq -r '.config.last_fallback.at // empty' 2>/dev/null || true)
+        echo "fallback: ${g_reason} at ${g_at}"
+      fi
     fi
   else
     echo "server:  down"
@@ -283,94 +305,150 @@ _openai_get_plist_value() {
   fi
 }
 
-# Print a one-line hint if the Keychain OpenAI key is missing or obviously
-# malformed. Returns non-zero so callers can gate follow-up output on it.
-_warn_openai_key_unusable() {
-  if ! security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
-    echo "! no OpenAI API key in Keychain — run: tts openai-key" >&2
-    return 1
-  fi
-  local stored
-  stored=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" -w 2>/dev/null || echo "")
-  if [[ "$stored" != sk-* ]] || [[ "${#stored}" -lt 40 ]]; then
-    echo "! stored OpenAI key looks malformed (expected sk-... 40+ chars) — re-run: tts openai-key" >&2
-    return 1
-  fi
-  return 0
+# --- Keychain key helpers (shared by openai and google) ---------------------------------
+
+_key_stored() {
+  security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$1" >/dev/null 2>&1
 }
 
-cmd_provider() {
-  local name="${1:?usage: tts provider <edge-tts|openai>}"
-  case "$name" in
-    edge-tts|openai) ;;
-    *) echo "error: provider must be 'edge-tts' or 'openai'" >&2; return 2 ;;
+# Print a short description of what is wrong with the stored key's shape; print
+# nothing if it looks fine (or if no key is stored — use _key_stored for that).
+# Shape checks are heuristics that catch typos and the legacy bug where the
+# `security -w` tty prompt got a password typed into it instead of the API key.
+_key_shape_problem() {
+  local account="$1" stored
+  stored=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" -w 2>/dev/null) || return 0
+  case "$account" in
+    "$KEYCHAIN_ACCOUNT_OPENAI")
+      if [[ "$stored" != sk-* ]] || [[ "${#stored}" -lt 40 ]]; then
+        echo "expected sk-... with 40+ chars"
+      fi
+      ;;
+    "$KEYCHAIN_ACCOUNT_GOOGLE")
+      # Real Google API keys are ~39 chars starting with AIza.
+      if [[ "$stored" != AIza* ]] || [[ "${#stored}" -lt 35 ]] || [[ "${#stored}" -gt 45 ]]; then
+        echo "expected AIza... with 35-45 chars"
+      fi
+      ;;
   esac
-  _update_env TTS_PROVIDER "$name" && echo "provider: $name (server restarted)"
-  # Nudge the user if they switched to openai without a usable key — otherwise
-  # the next /speak just 401s and the only trace is logs/server.log.
-  if [[ "$name" == "openai" ]]; then
-    _warn_openai_key_unusable || true
-  fi
 }
 
-_validate_openai_key() {
-  # OpenAI keys start with `sk-` (classic) or `sk-proj-` (project-scoped) and
-  # are >= 40 chars. Cheap sanity check to catch obvious typos and the legacy
-  # bug where `security -w` prompted twice from /dev/tty and the user typed a
-  # password there instead of pasting the real key.
-  local key="$1"
-  if [[ "$key" != sk-* ]]; then
-    echo "error: key must start with 'sk-' (classic) or 'sk-proj-' (project-scoped)" >&2
-    echo "       got: ${key:0:6}... — find your key at https://platform.openai.com/api-keys" >&2
-    return 2
+# Print a one-line hint if the Keychain key for <openai|google> is missing or
+# obviously malformed. Returns non-zero so callers can gate follow-up output.
+_warn_key_unusable() {
+  local kind="$1" account label
+  case "$kind" in
+    openai) account="$KEYCHAIN_ACCOUNT_OPENAI"; label="OpenAI" ;;
+    google) account="$KEYCHAIN_ACCOUNT_GOOGLE"; label="Google" ;;
+    *) echo "internal error: unknown key kind '$kind'" >&2; return 2 ;;
+  esac
+  if ! _key_stored "$account"; then
+    echo "! no $label API key in Keychain — run: tts $kind-key" >&2
+    return 1
   fi
-  if [[ "${#key}" -lt 40 ]]; then
-    echo "error: key is only ${#key} chars — OpenAI keys are typically 50+ chars" >&2
-    echo "       double-check that you pasted the full value (no truncation)" >&2
-    return 2
+  local problem
+  problem=$(_key_shape_problem "$account")
+  if [[ -n "$problem" ]]; then
+    echo "! stored $label key looks malformed ($problem) — re-run: tts $kind-key" >&2
+    return 1
   fi
   return 0
 }
 
-cmd_openai_key() {
-  local key
-  printf "OpenAI API key: "
-  IFS= read -rs key
-  echo
-  if [[ -z "$key" ]]; then
-    echo "error: empty key, nothing stored" >&2
-    return 2
+# Store a key: ask before replacing an existing one, then let `security` prompt
+# on the tty (hidden input, asked twice). The key never appears in our argv or
+# in `ps`. After storing, the shape is checked and a malformed key only warns —
+# we never delete what the user just typed.
+_store_key() {
+  local account="$1" label="$2" kind="$3"
+  if _key_stored "$account"; then
+    if [[ ! -t 0 ]]; then
+      echo "error: $label key already stored and stdin is not a terminal — cannot confirm replace" >&2
+      return 2
+    fi
+    local answer
+    read -r -p "$label key already stored, replace? [y/N] " answer
+    if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+      echo "aborted, stored key unchanged"
+      return 0
+    fi
   fi
-  _validate_openai_key "$key" || return $?
-  # Pass the key as an argv value for `security -w`. An earlier version piped
-  # the key via stdin in hopes of keeping it out of `ps` — but macOS's
-  # `security add-generic-password -w` (no argument) reads from /dev/tty with
-  # a confirm prompt and ignores stdin entirely, so the piped value was
-  # silently discarded and whatever the user typed at the tty prompt got
-  # stored instead. `ps` exposure on a single-user Mac is acceptable: any
-  # same-UID process already has full access to this Keychain item.
-  if security add-generic-password -U \
-      -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" \
-      -w "$key"; then
-    echo "OpenAI key stored in Keychain (service=$KEYCHAIN_SERVICE account=$KEYCHAIN_ACCOUNT_OPENAI)"
-  else
+  echo "Paste the $label API key at the prompt below (input is hidden, asked twice)."
+  if ! security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$account" -w; then
     echo "error: failed to store key in Keychain" >&2
     return 1
   fi
+  echo "$label key stored in Keychain (service=$KEYCHAIN_SERVICE account=$account)"
+  _warn_key_unusable "$kind" || true
   if health_ok; then
     _reload_agent && echo "server restarted (key reloaded)"
   fi
 }
 
-cmd_openai_key_clear() {
-  if security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" 2>/dev/null; then
-    echo "OpenAI key removed from Keychain"
+_clear_key() {
+  local account="$1" label="$2"
+  if security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" >/dev/null 2>&1; then
+    echo "$label key removed from Keychain"
   else
-    echo "no OpenAI key was stored"
+    echo "no $label key was stored"
   fi
   if health_ok; then
     _reload_agent && echo "server restarted"
   fi
+}
+
+cmd_provider() {
+  local name="${1:?usage: tts provider <edge-tts|openai|google>}"
+  case "$name" in
+    edge-tts|openai|google) ;;
+    *) echo "error: provider must be 'edge-tts', 'openai' or 'google'" >&2; return 2 ;;
+  esac
+  _update_env TTS_PROVIDER "$name" && echo "provider: $name (server restarted)"
+  # Nudge the user if they switched to a keyed provider without a usable key —
+  # openai would 401 on the next /speak, google would silently fall back to
+  # edge-tts, and the only trace of either is logs/server.log.
+  if [[ "$name" == "openai" || "$name" == "google" ]]; then
+    _warn_key_unusable "$name" || true
+  fi
+}
+
+cmd_openai_key() {
+  _store_key "$KEYCHAIN_ACCOUNT_OPENAI" "OpenAI" openai
+}
+
+cmd_openai_key_clear() {
+  _clear_key "$KEYCHAIN_ACCOUNT_OPENAI" "OpenAI"
+}
+
+cmd_google_key() {
+  _store_key "$KEYCHAIN_ACCOUNT_GOOGLE" "Google" google
+}
+
+cmd_google_key_clear() {
+  _clear_key "$KEYCHAIN_ACCOUNT_GOOGLE" "Google"
+}
+
+cmd_google_voice() {
+  local name="${1:?usage: tts google-voice <name>  (e.g. ru-RU-Chirp3-HD-Aoede, en-US-Chirp3-HD-Puck)}"
+  if [[ ! "$name" =~ ^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$ ]]; then
+    echo "error: voice must look like ru-RU-Chirp3-HD-Aoede (Chirp 3 HD voices only)" >&2
+    return 2
+  fi
+  _update_env GOOGLE_TTS_VOICE "$name" && echo "google voice: $name (server restarted)"
+}
+
+cmd_google_speed() {
+  local value="${1:?usage: tts google-speed <value>  (0.25 to 2.0, e.g. 1.1)}"
+  if [[ ! "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "error: speed must be a positive number (e.g. 0.9, 1.25, 2.0)" >&2
+    return 2
+  fi
+  # Chirp 3 HD accepts 0.25–2.0 (narrower than OpenAI's 4.0).
+  awk -v v="$value" 'BEGIN{ if (v+0 < 0.25 || v+0 > 2.0) exit 1 }' || {
+    echo "error: speed must be between 0.25 and 2.0" >&2
+    return 2
+  }
+  _update_env GOOGLE_TTS_SPEED "$value" && echo "google speed: $value (server restarted)"
 }
 
 cmd_openai_voice() {
@@ -596,6 +674,10 @@ _default_for_key() {
     TTS_PORT)         echo "7852" ;;
     TTS_LOCK_FILE)    echo "/tmp/nl-recording.lock" ;;
     TTS_RESPECT_LOCK) echo "1" ;;
+    GOOGLE_TTS_VOICE) echo "ru-RU-Chirp3-HD-Aoede" ;;
+    GOOGLE_TTS_SPEED) echo "1.0" ;;
+    GOOGLE_TTS_MONTHLY_CHAR_LIMIT) echo "990000" ;;
+    GOOGLE_TTS_USAGE_FILE) echo "$GOOGLE_USAGE_FILE_DEFAULT" ;;
     *)                echo "" ;;
   esac
 }
@@ -606,33 +688,39 @@ cmd_config() {
     return 1
   fi
   echo "Config from $PLIST"
-  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed' or PlistBuddy + 'tts restart')"
+  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed|google-voice|google-speed' or PlistBuddy + 'tts restart')"
   echo
   local keys=(
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
     OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED OPENAI_TTS_INSTRUCTIONS
+    GOOGLE_TTS_VOICE GOOGLE_TTS_SPEED GOOGLE_TTS_MONTHLY_CHAR_LIMIT GOOGLE_TTS_USAGE_FILE
     TTS_TLDR_ONLY TTS_TLDR_FALLBACK_TEXT
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
   local key val default_hint
   for key in "${keys[@]}"; do
     if val=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST" 2>/dev/null); then
-      printf "  %-18s = %s\n" "$key" "$val"
+      printf "  %-30s = %s\n" "$key" "$val"
     else
       default_hint=$(_default_for_key "$key")
       if [[ -n "$default_hint" ]]; then
-        printf "  %-18s = (unset, default=%s)\n" "$key" "$default_hint"
+        printf "  %-30s = (unset, default=%s)\n" "$key" "$default_hint"
       else
-        printf "  %-18s = (unset)\n" "$key"
+        printf "  %-30s = (unset)\n" "$key"
       fi
     fi
   done
   echo
-  if security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
-    echo "  OpenAI key         = (stored in Keychain)"
+  if _key_stored "$KEYCHAIN_ACCOUNT_OPENAI"; then
+    printf "  %-30s = %s\n" "OpenAI key" "(stored in Keychain)"
   else
-    echo "  OpenAI key         = (not stored — run: tts openai-key)"
+    printf "  %-30s = %s\n" "OpenAI key" "(not stored — run: tts openai-key)"
+  fi
+  if _key_stored "$KEYCHAIN_ACCOUNT_GOOGLE"; then
+    printf "  %-30s = %s\n" "Google key" "(stored in Keychain)"
+  else
+    printf "  %-30s = %s\n" "Google key" "(not stored — run: tts google-key)"
   fi
 }
 
@@ -717,15 +805,13 @@ cmd_doctor() {
         _warn "openai not importable (ok — provider is $active_provider; run 'tts update' to install)"
       fi
     fi
-    if security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" >/dev/null 2>&1; then
-      # Read the stored key and sanity-check its shape — catches the legacy
-      # bug where a non-key string got saved via `security -w` tty prompts.
-      local stored_key
-      stored_key=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT_OPENAI" -w 2>/dev/null || echo "")
-      if [[ "$stored_key" == sk-* ]] && [[ "${#stored_key}" -ge 40 ]]; then
+    if _key_stored "$KEYCHAIN_ACCOUNT_OPENAI"; then
+      local openai_problem
+      openai_problem=$(_key_shape_problem "$KEYCHAIN_ACCOUNT_OPENAI")
+      if [[ -z "$openai_problem" ]]; then
         _ok "OpenAI key present in Keychain (format looks valid)"
       else
-        _fail "OpenAI key in Keychain looks malformed (expected sk-... , 40+ chars) — re-run: tts openai-key"
+        _fail "OpenAI key in Keychain looks malformed ($openai_problem) — re-run: tts openai-key"
       fi
     else
       if [[ "$active_provider" == "openai" ]]; then
@@ -756,6 +842,60 @@ cmd_doctor() {
     else
       _warn "instructions set but model '$doc_model' ignores them (only gpt-4o-mini-tts applies)"
     fi
+  fi
+
+  echo
+  echo "== Google provider =="
+  # Problems are hard failures only when google is the active provider; otherwise
+  # they are warnings, because the user may be preparing a later switch.
+  _google_problem() {
+    if [[ "$active_provider" == "google" ]]; then _fail "$1"; else _warn "$1"; fi
+  }
+  if [[ -x "$venv_py" ]]; then
+    if "$venv_py" -c 'import httpx' >/dev/null 2>&1; then
+      _ok "httpx importable"
+    else
+      _google_problem "httpx not importable — run: tts update"
+    fi
+    if "$venv_py" -c 'from zoneinfo import ZoneInfo; ZoneInfo("America/Los_Angeles")' >/dev/null 2>&1; then
+      _ok "timezone database available (usage month uses America/Los_Angeles)"
+    else
+      _warn "timezone database missing — usage month falls back to fixed UTC-8"
+    fi
+  fi
+  if _key_stored "$KEYCHAIN_ACCOUNT_GOOGLE"; then
+    local google_problem
+    google_problem=$(_key_shape_problem "$KEYCHAIN_ACCOUNT_GOOGLE")
+    if [[ -z "$google_problem" ]]; then
+      _ok "Google key present in Keychain (format looks valid)"
+    else
+      _google_problem "Google key in Keychain looks malformed ($google_problem) — re-run: tts google-key"
+    fi
+  else
+    _google_problem "Google key not stored — run: tts google-key"
+  fi
+  local g_voice g_speed g_usage_file
+  g_voice=$(_openai_get_plist_value GOOGLE_TTS_VOICE "ru-RU-Chirp3-HD-Aoede")
+  if [[ "$g_voice" =~ ^[a-z]{2,3}-[A-Z]{2}-Chirp3-HD-[A-Za-z]+$ ]]; then
+    _ok "google voice: $g_voice"
+  else
+    _google_problem "google voice '$g_voice' does not look like a Chirp 3 HD voice — run: tts google-voice"
+  fi
+  g_speed=$(_openai_get_plist_value GOOGLE_TTS_SPEED "1.0")
+  if awk -v v="$g_speed" 'BEGIN{ exit !(v+0 >= 0.25 && v+0 <= 2.0) }'; then
+    _ok "google speed: $g_speed (0.25-2.0)"
+  else
+    _google_problem "google speed '$g_speed' outside 0.25-2.0 (server clamps it) — run: tts google-speed"
+  fi
+  g_usage_file=$(_openai_get_plist_value GOOGLE_TTS_USAGE_FILE "$GOOGLE_USAGE_FILE_DEFAULT")
+  if [[ -f "$g_usage_file" ]]; then
+    if jq -e .chars "$g_usage_file" >/dev/null 2>&1; then
+      _ok "usage file parses: $g_usage_file ($(jq -r '"\(.chars) chars in \(.month)"' "$g_usage_file"))"
+    else
+      _warn "usage file is unreadable JSON: $g_usage_file (server renames it to .corrupt and restarts from 0)"
+    fi
+  else
+    _ok "no usage file yet (created on the first Google request)"
   fi
 
   echo
@@ -873,7 +1013,7 @@ COMMANDS=(
   test             "[text]  Synthesize and play a phrase (default: greeting)"
   restart          "Kick the launchd agent to restart the server"
   logs             "Tail server log"
-  provider         "<edge-tts|openai>  Switch TTS provider and restart"
+  provider         "<edge-tts|openai|google>  Switch TTS provider and restart"
   voice            "<name>  [edge-tts] Switch voice (e.g. ru-RU-DmitryNeural) and restart"
   rate             "<val>   [edge-tts] Set speech rate (e.g. +15%, -10%) and restart"
   pitch            "<val>   [edge-tts] Set pitch (e.g. +50Hz, -20Hz) and restart"
@@ -887,6 +1027,10 @@ COMMANDS=(
   openai-instructions-clear  "[openai]  Remove the stored tone/style hint"
   openai-instructions-show   "[openai]  Print the stored tone/style hint"
   speed            "<val>   [openai] Set speech speed 0.25–4.0 (e.g. 1.25) and restart"
+  google-key       "[google]  Prompt for and store the Google API key in Keychain"
+  google-key-clear "[google]  Remove the Google API key from Keychain"
+  google-voice     "<name>  [google] Switch Chirp 3 HD voice (e.g. ru-RU-Chirp3-HD-Aoede) and restart"
+  google-speed     "<val>   [google] Set speech speed 0.25–2.0 (e.g. 1.1) and restart"
   tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
   tldr-fallback        "<text>  Phrase spoken when TL;DR is missing (overrides silent-skip)"
   tldr-fallback-clear  "Remove the TL;DR fallback phrase (restore silent-skip)"

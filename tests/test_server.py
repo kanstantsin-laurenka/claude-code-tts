@@ -1,5 +1,5 @@
 """
-Server tests — mock providers (edge-tts or openai) and afplay so tests don't
+Server tests — mock providers (edge-tts, openai or google) and afplay so tests don't
 need network or audio output. A fresh ThreadingHTTPServer is spun per-test on
 a random port to avoid interference with the live launchd-managed server on
 7852.
@@ -314,6 +314,162 @@ def test_invalid_speed_does_not_crash_server(monkeypatch):
     importlib.reload(srv)
 
     assert srv.OPENAI_SPEED == 1.0
+
+
+@pytest.fixture
+def google_server(monkeypatch, tmp_path):
+    """Fresh server with provider=google: fake key, httpx mocked, edge/afplay/notify stubbed."""
+    import base64
+
+    import httpx
+
+    port = _free_port()
+    lock_file = tmp_path / "nl-recording.lock"
+    usage_file = tmp_path / "google-usage.json"
+
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("TTS_RESPECT_LOCK", "1")
+    monkeypatch.setenv("TTS_PROVIDER", "google")
+    monkeypatch.setenv("TTS_TLDR_ONLY", "0")
+    monkeypatch.setenv("GOOGLE_TTS_USAGE_FILE", str(usage_file))
+    monkeypatch.delenv("GOOGLE_TTS_MONTHLY_CHAR_LIMIT", raising=False)
+    monkeypatch.delenv("GOOGLE_TTS_SPEED", raising=False)
+
+    import claude_code_tts.keychain as keychain_mod
+    import claude_code_tts.notify as notify_mod
+    import claude_code_tts.providers.google as google_mod
+
+    monkeypatch.setattr(keychain_mod, "get_google_key", lambda: "AIza-test-dummy")
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(notify_mod, "send", lambda title, msg: notes.append((title, msg)))
+
+    state = {"status": 200}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if state["status"] != 200:
+            return httpx.Response(state["status"], text="boom")
+        return httpx.Response(200, json={"audioContent": base64.b64encode(b"\x00").decode()})
+
+    real_client = httpx.AsyncClient
+
+    def factory(*a, **kw):
+        kw["transport"] = httpx.MockTransport(handler)
+        return real_client(*a, **kw)
+
+    monkeypatch.setattr(google_mod.httpx, "AsyncClient", factory)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+    _patch_edge(monkeypatch)
+    _patch_afplay(monkeypatch, srv)
+
+    httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield {
+            "port": port,
+            "srv": srv,
+            "lock_file": lock_file,
+            "usage_file": usage_file,
+            "state": state,
+            "notes": notes,
+        }
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _used(usage_file: Path) -> int:
+    return json.loads(usage_file.read_text())["chars"] if usage_file.exists() else 0
+
+
+def test_google_health_has_usage_and_no_key(google_server):
+    status, body = _request(google_server["port"], "GET", "/health")
+    assert status == 200
+    cfg = json.loads(body)["config"]
+    assert cfg["provider"] == "google"
+    assert cfg["key_loaded"] is True
+    assert cfg["fallback"] == "edge-tts"
+    assert cfg["usage"]["limit"] == 990_000
+    assert cfg["last_fallback"] is None
+    assert "AIza" not in body.decode()
+
+
+def test_google_speak_counts_usage(google_server):
+    status, body = _request(google_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 202
+    assert _used(google_server["usage_file"]) == len("Привет")
+    _, health = _request(google_server["port"], "GET", "/health")
+    assert json.loads(health)["config"]["usage"]["used"] == len("Привет")
+
+
+def test_google_failure_still_speaks_via_edge(google_server):
+    google_server["state"]["status"] = 500
+    status, _ = _request(google_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 202
+    _, health = _request(google_server["port"], "GET", "/health")
+    cfg = json.loads(health)["config"]
+    assert cfg["fallback_count"] == 1
+    assert "HTTP 500" in cfg["last_fallback"]["reason"]
+    assert google_server["notes"] == []
+
+
+def test_google_locked_returns_423_and_counts_nothing(google_server):
+    google_server["lock_file"].touch()
+    try:
+        status, _ = _request(google_server["port"], "POST", "/speak", {"text": "Прячь"})
+    finally:
+        google_server["lock_file"].unlink(missing_ok=True)
+    assert status == 423
+    assert _used(google_server["usage_file"]) == 0
+    assert google_server["notes"] == []
+
+
+def test_google_limit_exhaustion_switches_to_edge(google_server):
+    from datetime import datetime, timezone
+
+    from claude_code_tts.usage import month_key
+
+    google_server["usage_file"].write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "month": month_key(datetime.now(timezone.utc)),
+                "chars": 989_995,
+                "flags": ["warn_80", "warn_90"],
+            }
+        )
+    )
+    status, _ = _request(google_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 202
+    assert _used(google_server["usage_file"]) == 989_995
+    assert len(google_server["notes"]) == 1
+    _, health = _request(google_server["port"], "GET", "/health")
+    assert "exhausted" in json.loads(health)["config"]["usage"]["flags"]
+
+
+def test_google_bad_limit_and_speed_env_do_not_crash(monkeypatch, tmp_path):
+    monkeypatch.setenv("TTS_PORT", str(_free_port()))
+    monkeypatch.setenv("TTS_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_TTS_USAGE_FILE", str(tmp_path / "u.json"))
+    monkeypatch.setenv("GOOGLE_TTS_MONTHLY_CHAR_LIMIT", "lots")
+    monkeypatch.setenv("GOOGLE_TTS_SPEED", "fast")
+
+    import claude_code_tts.keychain as keychain_mod
+
+    monkeypatch.setattr(keychain_mod, "get_google_key", lambda: None)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    assert srv.GOOGLE_LIMIT == 990_000
+    assert srv.GOOGLE_SPEED == 1.0
+    assert srv.PROVIDER.name == "google"
 
 
 @pytest.fixture

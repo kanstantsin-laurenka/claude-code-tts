@@ -20,12 +20,25 @@ hooks/tts-stop.sh  (20 lines)
 src/claude_code_tts/server.py  (launchd agent com.claude-code.tts)
     1. clean_for_tts(text)  — strip markdown/code
     2. if /tmp/nl-recording.lock exists → return 423 (skip playback)
-    3. edge-tts → temp MP3
+    3. provider → temp MP3   (edge-tts | openai | google, chosen by TTS_PROVIDER)
     4. SIGTERM previous afplay → start new afplay
     │
     ▼
 macOS audio output
 ```
+
+When `TTS_PROVIDER=google`, step 3 goes through `GoogleWithFallback`:
+
+```
+providers/google_fallback.py  GoogleWithFallback.synthesize(text)
+    1. no key or > 5000 bytes?      → edge-tts (not counted)
+    2. "exhausted" flag set?        → edge-tts (sticky until the Pacific month rolls over)
+    3. usage.reserve(len(text))     → None (would exceed limit): set flag, notify, edge-tts
+    4. warning tier reached?        → notify.send + append a spoken phrase to the text
+    5. providers/google.py → Google TTS REST  (any failure → same request on edge-tts)
+```
+
+`usage.py` only counts (file `~/.config/claude-code-tts/google-usage.json`, thread-safe, re-read on every call); `notify.py` only runs `osascript`; all alert and fallback policy lives in the wrapper. See [CONFIGURATION.md](CONFIGURATION.md#google-knobs) for the numbers.
 
 SessionStart hook (`hooks/tts-status.sh`) runs once per Claude Code session and prints one line showing whether the server is healthy.
 
@@ -61,6 +74,7 @@ Without this, Claude Code's voice response would play into the microphone and en
 | `<repo>/venv/` | Python venv with edge-tts | install.sh |
 | `<repo>/logs/server.log` | launchd stdout+stderr | launchd |
 | `~/.config/claude-code-tts/enabled` | `0`/`1` flag | user (via `tts on/off`) |
+| `~/.config/claude-code-tts/google-usage.json` | Google monthly char counter | server (`usage.py`) |
 | `~/.claude/settings.json` | Hook registration | patch_settings.py |
 | `~/Library/LaunchAgents/com.claude-code.tts.plist` | launchd agent | install.sh |
 | `~/.local/bin/tts` | Symlink to `<repo>/bin/tts` | install.sh |

@@ -2,7 +2,7 @@
 TTS SERVER
 
 HTTP bridge between Claude Code Stop-hook (hooks/tts-stop.sh) and a pluggable
-TTS provider (edge-tts by default, OpenAI optional).
+TTS provider (edge-tts by default; OpenAI or Google Chirp 3 HD optional).
 
 Business rules:
   - Only ever one afplay process alive: a new /speak SIGTERMs the previous
@@ -21,12 +21,17 @@ Business rules:
     voice into the transcription.
   - On provider failure (edge-tts/OpenAI/network), return 5xx and let the
     caller (tts-stop.sh) swallow it silently — Claude Code must never be
-    blocked by TTS.
+    blocked by TTS. Exception: the google provider is wrapped by
+    GoogleWithFallback, which retries on edge-tts first, so a Google failure
+    only surfaces as 5xx if edge-tts fails too.
   - Provider choice is frozen at module load: switching providers requires a
     launchd restart (`tts restart` or `tts provider ...`, which restarts).
+  - Synthesis is not serialized (one handler thread per request), so anything
+    shared between providers' requests (the Google usage counter) must be
+    thread-safe.
 
-Dependencies: edge-tts + openai (pip); afplay (macOS built-in); `security` CLI
-  for reading the OpenAI key from the Keychain.
+Dependencies: edge-tts + openai + httpx (pip); afplay and osascript (macOS
+  built-ins); `security` CLI for reading the OpenAI/Google keys from the Keychain.
 Related: hooks/tts-stop.sh, ~/.claude/settings.json (Stop hook),
          /tmp/nl-recording.lock (written by Hammerspoon STT config in TTS2 project).
 """
@@ -42,9 +47,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import keychain
+from . import notify as notify_mod
+from . import usage as usage_mod
 from .clean_text import clean_for_tts, extract_tldr
 from .providers import ProviderError, TTSProvider
 from .providers.edge import EdgeTTSProvider
+from .providers.google import GoogleTTSProvider
+from .providers.google_fallback import GoogleWithFallback
 from .providers.openai import OpenAIProvider
 
 HOST = "127.0.0.1"
@@ -65,7 +74,7 @@ OPENAI_VOICE = os.environ.get("OPENAI_TTS_VOICE", "nova")
 OPENAI_INSTRUCTIONS = os.environ.get("OPENAI_TTS_INSTRUCTIONS", "")
 
 
-def _parse_speed(raw: str) -> float:
+def _parse_speed(raw: str, name: str = "OPENAI_TTS_SPEED") -> float:
     # A bad value here would otherwise crash module import → launchd would loop
     # restarts forever. Match the unknown-TTS_PROVIDER fallback below: log and
     # use the safe default.
@@ -73,7 +82,7 @@ def _parse_speed(raw: str) -> float:
         return float(raw)
     except ValueError:
         print(
-            f"[tts] invalid OPENAI_TTS_SPEED={raw!r}, using 1.0",
+            f"[tts] invalid {name}={raw!r}, using 1.0",
             file=sys.stderr,
             flush=True,
         )
@@ -81,6 +90,15 @@ def _parse_speed(raw: str) -> float:
 
 
 OPENAI_SPEED = _parse_speed(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
+
+GOOGLE_VOICE = os.environ.get("GOOGLE_TTS_VOICE", "ru-RU-Chirp3-HD-Aoede")
+GOOGLE_SPEED = _parse_speed(os.environ.get("GOOGLE_TTS_SPEED", "1.0"), "GOOGLE_TTS_SPEED")
+# Local guard under Google's 1M free tier; see usage.py for why it is 990k.
+GOOGLE_LIMIT = usage_mod.parse_limit(os.environ.get("GOOGLE_TTS_MONTHLY_CHAR_LIMIT"))
+GOOGLE_USAGE_FILE = os.environ.get(
+    "GOOGLE_TTS_USAGE_FILE",
+    os.path.expanduser("~/.config/claude-code-tts/google-usage.json"),
+)
 
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
 
@@ -109,6 +127,14 @@ def _make_provider() -> TTSProvider:
             speed=OPENAI_SPEED,
             api_key=keychain.get_openai_key(),
             instructions=OPENAI_INSTRUCTIONS,
+        )
+    if PROVIDER_NAME == "google":
+        return GoogleWithFallback(
+            GoogleTTSProvider(GOOGLE_VOICE, GOOGLE_SPEED, keychain.get_google_key()),
+            EdgeTTSProvider(voice=VOICE, rate=RATE, pitch=PITCH),
+            usage_mod.UsageCounter(GOOGLE_USAGE_FILE, GOOGLE_LIMIT),
+            # Module attribute lookup at build time so tests can patch notify.send.
+            notify_mod.send,
         )
     # Unknown values fall through to edge-tts so a typo in TTS_PROVIDER doesn't
     # brick the server — just log and use the free default.

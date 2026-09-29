@@ -15,11 +15,12 @@ Architecture and config details live in `@docs/ARCHITECTURE.md` and `@docs/CONFI
 ## Layout
 
 - `bin/tts` — Bash CLI (`on`/`off`/`toggle`/`status`/`test`/`restart`/`voice`/...)
-- `src/claude_code_tts/` — Python package: `server.py` (HTTP + edge-tts), `clean_text.py` (markdown cleanup)
+- `src/claude_code_tts/` — Python package: `server.py` (HTTP + provider wiring), `clean_text.py` (markdown cleanup), `keychain.py` (read-only Keychain access), `usage.py` (monthly Google char counter), `notify.py` (`osascript` notifications)
+- `src/claude_code_tts/providers/` — `edge.py`, `openai.py`, `google.py` (REST client) and `google_fallback.py` (quota alerts + fallback to edge-tts; all Google policy lives there)
 - `hooks/` — Bash hooks registered in `~/.claude/settings.json` (`tts-stop.sh`, `tts-status.sh`)
 - `scripts/patch_settings.py` — idempotent editor for `~/.claude/settings.json`
 - `launchd/` — `launchd` plist template
-- `tests/` — pytest suite (tests `clean_text`, `patch_settings`, `server`)
+- `tests/` — pytest suite (`clean_text`, `patch_settings`, `server`, `keychain`, `usage`, `google_provider`, `google_fallback`; CI runs on Linux, so tests must not need `security`/`afplay`/`osascript`)
 - `install.sh` / `uninstall.sh` — idempotent, re-runnable
 - `scripts/dev-setup.sh` — one-shot contributor setup (venv, dev deps, git hooks)
 - `.githooks/pre-push` — runs `pytest -q` before `git push`; opt-in via `scripts/dev-setup.sh`

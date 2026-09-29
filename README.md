@@ -2,7 +2,7 @@
 
 [![test](https://github.com/kanstantsin-laurenka/claude-code-tts/actions/workflows/test.yml/badge.svg)](https://github.com/kanstantsin-laurenka/claude-code-tts/actions/workflows/test.yml)
 
-Speak Claude Code's responses aloud on macOS using Microsoft's free neural voices via [edge-tts](https://github.com/rany2/edge-tts). Zero cloud keys, zero paid APIs.
+Speak Claude Code's responses aloud on macOS using Microsoft's free neural voices via [edge-tts](https://github.com/rany2/edge-tts) — no API key needed. Optional providers: OpenAI TTS (paid) and Google Chirp 3 HD (free tier of 1M chars/month, guarded by a local counter that falls back to edge-tts).
 
 ```
 Claude Code answers
@@ -48,6 +48,11 @@ tts logs            tail -f server log
 tts voice <name>    Switch voice (e.g. ru-RU-DmitryNeural, en-US-AriaNeural)
 tts rate <val>      Set speech rate (e.g. +15%, -10%)
 tts pitch <val>     Set pitch (e.g. +50Hz, -20Hz)
+tts provider <name> Switch provider: edge-tts | openai | google
+tts google-key      Store the Google API key in Keychain (hidden prompt)
+tts google-key-clear  Remove the Google API key
+tts google-voice <name>  Set Chirp 3 HD voice (e.g. ru-RU-Chirp3-HD-Aoede)
+tts google-speed <val>   Set Google speaking rate (0.25–2.0)
 tts tldr <on|off>   Speak only TL;DR block, silent if absent (default: on)
 tts reset           Restore voice/rate/pitch to defaults (single restart)
 tts config          Print current env values from the plist
@@ -76,6 +81,11 @@ All runtime parameters come from environment variables set in the launchd plist.
 | `TTS_RATE` | `+0%` | Speech rate delta |
 | `TTS_PITCH` | `+0Hz` | Pitch delta |
 | `TTS_TLDR_ONLY` | `1` | Speak only the trailing `TL;DR` block; silent if absent. `tts tldr off` to restore full-message playback |
+| `TTS_PROVIDER` | `edge-tts` | `edge-tts`, `openai` or `google` |
+| `GOOGLE_TTS_VOICE` | `ru-RU-Chirp3-HD-Aoede` | Google Chirp 3 HD voice |
+| `GOOGLE_TTS_SPEED` | `1.0` | Google speaking rate, 0.25–2.0 |
+| `GOOGLE_TTS_MONTHLY_CHAR_LIMIT` | `990000` | Local monthly cap; above it the server uses edge-tts until the next (Pacific) month |
+| `GOOGLE_TTS_USAGE_FILE` | `~/.config/claude-code-tts/google-usage.json` | Monthly character counter |
 | `TTS_MAX_CHARS` | `1500` | Truncate long responses before synthesis |
 | `TTS_PORT` | `7852` | Local HTTP server port |
 | `TTS_LOCK_FILE` | `/tmp/nl-recording.lock` | If this file exists, suppress playback |
