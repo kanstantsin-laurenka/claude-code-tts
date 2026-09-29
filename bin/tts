@@ -738,6 +738,23 @@ cmd_update() {
   bash "$REPO_DIR/install.sh"
 }
 
+# Print the first command registered for hook event $2 that contains $3, or
+# nothing. Scans every entry: other tools (e.g. iTerm2's cc-status) also register
+# Stop/SessionStart hooks and may sit before ours, so checking only index [0]
+# reported a healthy install as broken.
+_find_hook_command() {
+  jq -r --arg ev "$2" --arg needle "$3" \
+    '[.hooks[$ev][]?.hooks[]?.command] | map(select(contains($needle))) | .[0] // empty' \
+    "$1" 2>/dev/null || true
+}
+
+# Comma-separated list of every command registered for hook event $2 (for error messages).
+_list_hook_commands() {
+  local out
+  out=$(jq -r --arg ev "$2" '[.hooks[$ev][]?.hooks[]?.command] | join(", ")' "$1" 2>/dev/null || true)
+  echo "${out:-(none)}"
+}
+
 cmd_doctor() {
   local fails=0
   _ok()   { printf '  \033[0;32m✓\033[0m %s\n' "$1"; }
@@ -946,18 +963,18 @@ cmd_doctor() {
   local settings="$HOME/.claude/settings.json"
   if [[ -f "$settings" ]]; then
     local stop_cmd
-    stop_cmd=$(jq -r '.hooks.Stop[0].hooks[0].command // "(none)"' "$settings" 2>/dev/null)
-    if [[ "$stop_cmd" == *"$REPO_DIR/hooks/tts-stop.sh"* ]]; then
+    stop_cmd=$(_find_hook_command "$settings" Stop "$REPO_DIR/hooks/tts-stop.sh")
+    if [[ -n "$stop_cmd" ]]; then
       _ok "Stop hook: $stop_cmd"
     else
-      _fail "Stop hook is not ours — got: $stop_cmd"
+      _fail "Stop hook is not registered — found: $(_list_hook_commands "$settings" Stop)"
     fi
     local sess_cmd
-    sess_cmd=$(jq -r '.hooks.SessionStart[0].hooks[0].command // "(none)"' "$settings" 2>/dev/null)
-    if [[ "$sess_cmd" == *"$REPO_DIR/hooks/tts-status.sh"* ]]; then
+    sess_cmd=$(_find_hook_command "$settings" SessionStart "$REPO_DIR/hooks/tts-status.sh")
+    if [[ -n "$sess_cmd" ]]; then
       _ok "SessionStart hook: $sess_cmd"
     else
-      _fail "SessionStart hook is not ours — got: $sess_cmd"
+      _fail "SessionStart hook is not registered — found: $(_list_hook_commands "$settings" SessionStart)"
     fi
   else
     _fail "settings.json missing: $settings"
