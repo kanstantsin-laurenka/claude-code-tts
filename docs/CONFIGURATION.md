@@ -32,19 +32,7 @@ tts provider google      # Google Chirp 3 HD (requires: tts google-key)
 
 Defaults: `ru-RU-SvetlanaNeural`, `+0%`, `+0Hz`.
 
-## Autostart
-
-By default the launchd agent starts at login and stays idle in memory. To start it only when you need it:
-
-```bash
-tts autostart off   # persistent across reboots; running server is left alone
-tts on              # starts the server on demand (autostart stays off)
-tts autostart on    # back to the default
-```
-
-`tts autostart off` uses `launchctl disable`, which survives reboots. `tts on`, `tts restart`, `tts provider …` and `install.sh` lift the flag only for the load call and restore it, so none of them silently re-enable autostart. `tts uninstall` clears the flag. Check the current state with `tts autostart` or `tts status`.
-
-### openai knobs
+## openai knobs
 
 | Command | Effect | Env var |
 |---|---|---|
@@ -145,7 +133,6 @@ tts restart
 | `TTS_PORT` | `7852` | Change only if 7852 is busy on your machine |
 | `TTS_LOCK_FILE` | `/tmp/nl-recording.lock` | File whose presence suppresses playback |
 | `TTS_RESPECT_LOCK` | `1` | Set to `0` to ignore the lock entirely |
-| `TTS_STATE_FILE` | `~/.config/claude-code-tts/enabled` | Advisory — the `enabled` flag is read by hooks, not by the server |
 | `PYTHONPATH` | `<repo>/src` | Set by `install.sh`; needed so `python -m claude_code_tts.server` resolves |
 
 ## Picking a voice
@@ -175,9 +162,16 @@ tts tldr on      # speak only TL;DR (default)
 
 Running `tts tldr on` when it is already on (or `off` when already off) is a no-op — the CLI prints `tldr-only: already <mode> (no change)` and does not restart the launchd agent, so active playback is never interrupted.
 
-## Enabled flag
+## On / off
 
-`~/.config/claude-code-tts/enabled` contains either `0` or `1`. Both hooks (`tts-stop.sh`, `tts-status.sh`) read it. `tts on`/`off` write it. The server itself does **not** consult the flag — playback is gated entirely in the hook.
+"On" means the launchd agent is enabled and the server is running; there is no flag file.
+
+| Command | Effect |
+|---|---|
+| `tts on` | `launchctl enable` + load + start the server. Survives reboots: the server comes back at login. |
+| `tts off` | stops playback, `launchctl disable` + boot out the server. Stays off after reboot until `tts on`, so an off TTS uses no memory. |
+
+Hooks only check `/health`: server up = speak, server down = silent. While TTS is off, config commands (`tts voice`, `tts provider`, `tts reset`, …) just save to the plist and print `saved; applies on next 'tts on'`; `tts test` and `tts restart` refuse with `TTS is off — run: tts on`. A first `install.sh` leaves TTS off; re-running it (or `tts update`) keeps the current state.
 
 ## Logs
 

@@ -14,7 +14,7 @@ UID_NUM="$(id -u)"
 DOMAIN="gui/${UID_NUM}"
 SERVICE="${DOMAIN}/${AGENT_LABEL}"
 STATE_DIR="$HOME/.config/claude-code-tts"
-STATE_FILE="$STATE_DIR/enabled"
+OLD_STATE_FILE="$STATE_DIR/enabled"
 LEGACY_FLAG="$HOME/.claude/skills/tts/tts-enabled"
 SETTINGS_JSON="$HOME/.claude/settings.json"
 
@@ -51,16 +51,22 @@ command -v afplay >/dev/null 2>&1 || fail "afplay missing (ships with macOS)"
 command -v jq     >/dev/null 2>&1 || fail "jq not found — install via: brew install jq"
 say "afplay, jq found"
 
-# 2. Migrate legacy enabled flag
+# 2. Decide the initial on/off state. "On" is the launchd agent being enabled, so a
+# re-install keeps whatever the user chose. Two one-time carry-overs:
+#   - an old flag file (this repo before the flag was dropped, or the legacy skill's
+#     tts-enabled) decides on/off exactly once, so upgrading never turns a muted
+#     setup into a speaking one;
+#   - a first install with no flag defaults to off (nothing speaks until `tts on`).
 mkdir -p "$STATE_DIR"
-if [[ -f "$LEGACY_FLAG" ]] && [[ ! -f "$STATE_FILE" ]]; then
-    cp "$LEGACY_FLAG" "$STATE_FILE"
-    say "migrated legacy flag → $STATE_FILE"
-elif [[ ! -f "$STATE_FILE" ]]; then
-    echo 0 > "$STATE_FILE"
-    say "initialized $STATE_FILE = 0"
-else
-    say "state file exists: $STATE_FILE = $(cat "$STATE_FILE")"
+old_flag_val=""
+for old_flag in "$OLD_STATE_FILE" "$LEGACY_FLAG"; do
+    if [[ -z "$old_flag_val" && -f "$old_flag" ]]; then
+        old_flag_val="$(cat "$old_flag")"
+    fi
+done
+fresh_install=0
+if [[ ! -f "$PLIST_TARGET" ]]; then
+    fresh_install=1
 fi
 
 # 3. venv + deps
@@ -175,26 +181,31 @@ if launchctl print "${DOMAIN}/${OLD_LABEL}" >/dev/null 2>&1; then
 fi
 rm -f "$OLD_PLIST"
 
-# 8. (Re)load new agent
+# 8. (Re)load new agent — unless TTS is off
+# ⚠️ WARNING: launchd refuses to bootstrap a disabled service, and `tts off` disables it.
+if [[ "$old_flag_val" == "1" ]]; then
+    launchctl enable "$SERVICE"
+elif [[ "$old_flag_val" == "0" ]] || [[ "$fresh_install" -eq 1 ]]; then
+    launchctl disable "$SERVICE"
+fi
+TTS_ON=1
+if launchctl print-disabled "$DOMAIN" 2>/dev/null \
+        | grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)"; then
+    TTS_ON=0
+fi
 if launchctl print "$SERVICE" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN" "$PLIST_TARGET" 2>/dev/null || true
 fi
-# Keep a deliberate `tts autostart off`: bootstrap refuses disabled services, so
-# lift the flag just for this call and restore it.
-autostart_was_disabled=0
-if launchctl print-disabled "$DOMAIN" 2>/dev/null \
-    | grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)"; then
-    autostart_was_disabled=1
+if [[ "$TTS_ON" -eq 1 ]]; then
     launchctl enable "$SERVICE"
+    launchctl bootstrap "$DOMAIN" "$PLIST_TARGET"
+    launchctl kickstart -k "$SERVICE" >/dev/null 2>&1 || true
+    say "launchd agent loaded: $AGENT_LABEL"
+else
+    say "TTS is off — agent not started (run: tts on)"
 fi
-bootstrap_rc=0
-launchctl bootstrap "$DOMAIN" "$PLIST_TARGET" || bootstrap_rc=$?
-if [[ "$autostart_was_disabled" -eq 1 ]]; then
-    launchctl disable "$SERVICE"
-fi
-[[ "$bootstrap_rc" -eq 0 ]] || fail "launchctl bootstrap failed (exit $bootstrap_rc)"
-launchctl kickstart -k "$SERVICE" >/dev/null 2>&1 || true
-say "launchd agent loaded: $AGENT_LABEL"
+# Read in step 2, applied above; now obsolete.
+rm -f "$OLD_STATE_FILE"
 
 # 9. Executable + symlink
 chmod +x "$REPO_DIR/bin/tts" "$REPO_DIR/hooks/tts-stop.sh" "$REPO_DIR/hooks/tts-status.sh" \
@@ -203,18 +214,20 @@ mkdir -p "$HOME/.local/bin"
 ln -sfn "$REPO_DIR/bin/tts" "$HOME/.local/bin/tts"
 say "symlink: ~/.local/bin/tts → $REPO_DIR/bin/tts"
 
-# 10. Wait for health
-ok=0
-for _ in 1 2 3 4 5 6 7 8; do
-    if curl -sf --max-time 1 http://127.0.0.1:7852/health >/dev/null 2>&1; then
-        ok=1; break
+# 10. Wait for health (only when TTS is on)
+if [[ "$TTS_ON" -eq 1 ]]; then
+    ok=0
+    for _ in 1 2 3 4 5 6 7 8; do
+        if curl -sf --max-time 1 http://127.0.0.1:7852/health >/dev/null 2>&1; then
+            ok=1; break
+        fi
+        sleep 0.5
+    done
+    if [[ "$ok" -eq 1 ]]; then
+        say "server healthy on http://127.0.0.1:7852"
+    else
+        warn "server not responding yet — tail $REPO_DIR/logs/server.log"
     fi
-    sleep 0.5
-done
-if [[ "$ok" -eq 1 ]]; then
-    say "server healthy on http://127.0.0.1:7852"
-else
-    warn "server not responding yet — tail $REPO_DIR/logs/server.log"
 fi
 
 case ":$PATH:" in
@@ -224,7 +237,7 @@ esac
 
 echo
 echo "Next:"
-echo "  tts on        # enable TTS"
+echo "  tts on        # start the server (stays on across reboots)"
 echo "  tts test      # play a test phrase"
 echo "  tts status    # show state"
 echo "  tts voices    # list ru/en voices"

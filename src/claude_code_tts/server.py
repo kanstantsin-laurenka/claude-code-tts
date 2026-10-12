@@ -113,11 +113,6 @@ TLDR_FALLBACK_TEXT = os.environ.get("TTS_TLDR_FALLBACK_TEXT", "")
 LOCK_FILE = os.environ.get("TTS_LOCK_FILE", "/tmp/nl-recording.lock")
 RESPECT_LOCK = os.environ.get("TTS_RESPECT_LOCK", "1") == "1"
 
-STATE_FILE = os.environ.get(
-    "TTS_STATE_FILE",
-    os.path.expanduser("~/.config/claude-code-tts/enabled"),
-)
-
 
 def _make_provider() -> TTSProvider:
     if PROVIDER_NAME == "openai":
@@ -279,7 +274,6 @@ class Handler(BaseHTTPRequestHandler):
                     "lock_file": LOCK_FILE,
                     "respect_lock": RESPECT_LOCK,
                     "locked": _is_locked(),
-                    "state_file": STATE_FILE,
                 },
             )
             return

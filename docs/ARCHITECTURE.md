@@ -11,10 +11,9 @@ Claude Code assistant message complete
     │ stdin JSON: {"last_assistant_message": "...", ...}
     ▼
 hooks/tts-stop.sh  (20 lines)
-    1. check ~/.config/claude-code-tts/enabled == "1"
-    2. curl /health on 127.0.0.1:7852
-    3. extract .last_assistant_message via jq
-    4. curl -X POST /speak {"text": ...}  (backgrounded, non-blocking)
+    1. curl /health on 127.0.0.1:7852 (server down == TTS off → exit)
+    2. extract .last_assistant_message via jq
+    3. curl -X POST /speak {"text": ...}  (backgrounded, non-blocking)
     │ HTTP
     ▼
 src/claude_code_tts/server.py  (launchd agent com.claude-code.tts)
@@ -73,7 +72,6 @@ Without this, Claude Code's voice response would play into the microphone and en
 | `<repo>/` | Source, CLI, scripts | git |
 | `<repo>/venv/` | Python venv with edge-tts | install.sh |
 | `<repo>/logs/server.log` | launchd stdout+stderr | launchd |
-| `~/.config/claude-code-tts/enabled` | `0`/`1` flag | user (via `tts on/off`) |
 | `~/.config/claude-code-tts/google-usage.json` | Google monthly char counter | server (`usage.py`) |
 | `~/.claude/settings.json` | Hook registration | patch_settings.py |
 | `~/Library/LaunchAgents/com.claude-code.tts.plist` | launchd agent | install.sh |

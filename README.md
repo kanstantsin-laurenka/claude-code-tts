@@ -33,18 +33,17 @@ tts test       # play a test phrase
 
 `install.sh` is idempotent: it creates a Python venv, installs `edge-tts`, renders a launchd plist, adds `Stop` and `SessionStart` hooks to `~/.claude/settings.json` (backing it up), and symlinks `bin/tts` into `~/.local/bin/`.
 
-If a legacy install from `~/.claude/skills/tts/` exists, it is migrated automatically: enabled-flag, settings.json hook paths, and the launchd agent are all replaced cleanly.
+If a legacy install from `~/.claude/skills/tts/` exists, it is migrated automatically: on/off state, settings.json hook paths, and the launchd agent are all replaced cleanly.
 
 ## CLI
 
 ```
-tts on              Enable TTS and (re)start the server
-tts off             Disable and stop current playback
+tts on              Start the server; stays on across reboots
+tts off             Stop the server and playback; stays off across reboots
 tts toggle          Toggle on/off
-tts status          enabled flag + server health + lock state + launchd state
+tts status          on/off state + server health + lock state + launchd state
 tts test [text]     Synthesize and play a phrase
-tts restart         Kick the launchd agent
-tts autostart [on|off]  Start the server at login (default on); off = only via `tts on`
+tts restart         Kick the launchd agent (requires TTS on)
 tts logs            tail -f server log
 tts voice <name>    Switch voice (e.g. ru-RU-DmitryNeural, en-US-AriaNeural)
 tts rate <val>      Set speech rate (e.g. +15%, -10%)
@@ -91,7 +90,6 @@ All runtime parameters come from environment variables set in the launchd plist.
 | `TTS_PORT` | `7852` | Local HTTP server port |
 | `TTS_LOCK_FILE` | `/tmp/nl-recording.lock` | If this file exists, suppress playback |
 | `TTS_RESPECT_LOCK` | `1` | Set to `0` to ignore the lock |
-| `TTS_STATE_FILE` | `~/.config/claude-code-tts/enabled` | Enabled-flag path (advisory) |
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for details and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full data flow.
 
