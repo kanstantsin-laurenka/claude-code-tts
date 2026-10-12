@@ -28,6 +28,8 @@ if launchctl print "$SERVICE" >/dev/null 2>&1; then
 else
     say "launchd agent not loaded"
 fi
+# Clear a leftover `tts autostart off` so a later reinstall starts from the default.
+launchctl enable "$SERVICE" 2>/dev/null || true
 rm -f "$PLIST_TARGET"
 say "plist removed"
 

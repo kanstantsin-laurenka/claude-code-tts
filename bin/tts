@@ -42,10 +42,34 @@ health_ok() {
   curl -sf --max-time 1 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1
 }
 
+# `tts autostart off` marks the agent as disabled in launchd's persistent
+# override database; that is what stops it loading at login.
+agent_autostart_disabled() {
+  launchctl print-disabled "$DOMAIN" 2>/dev/null \
+    | grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)"
+}
+
+# ⚠️ WARNING: launchd refuses to bootstrap a disabled service. Every manual load
+# (tts on/restart/provider/...) must go through here so it lifts the flag for the
+# call and puts it back — otherwise `tts on` would fail, or silently re-enable
+# autostart.
+bootstrap_agent() {
+  local was_disabled=0 rc=0
+  if agent_autostart_disabled; then
+    was_disabled=1
+    launchctl enable "$SERVICE"
+  fi
+  launchctl bootstrap "$DOMAIN" "$PLIST" || rc=$?
+  if [[ "$was_disabled" -eq 1 ]]; then
+    launchctl disable "$SERVICE"
+  fi
+  return "$rc"
+}
+
 ensure_agent_loaded() {
   if ! have_agent; then
     if [[ -f "$PLIST" ]]; then
-      launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null || true
+      bootstrap_agent 2>/dev/null || true
     else
       echo "error: launchd plist missing at $PLIST — run: tts install" >&2
       return 1
@@ -126,6 +150,36 @@ cmd_status() {
   else
     echo "launchd: not loaded"
   fi
+  if agent_autostart_disabled; then
+    echo "autostart: off (server starts only with 'tts on')"
+  else
+    echo "autostart: on (server starts at login)"
+  fi
+}
+
+# Persistent across reboots, unlike bootout. Does not touch the running server —
+# `tts off` + autostart off is what keeps memory free after the next login.
+cmd_autostart() {
+  case "${1:-status}" in
+    on)
+      launchctl enable "$SERVICE"
+      echo "autostart: on (server will start at login)"
+      ;;
+    off)
+      launchctl disable "$SERVICE"
+      echo "autostart: off (start manually with: tts on)"
+      if agent_running; then
+        echo "note: the server is still running now; stop it with: launchctl bootout $SERVICE"
+      fi
+      ;;
+    status)
+      if agent_autostart_disabled; then echo "autostart: off"; else echo "autostart: on"; fi
+      ;;
+    *)
+      echo "usage: tts autostart [on|off|status]" >&2
+      return 2
+      ;;
+  esac
 }
 
 cmd_test() {
@@ -192,7 +246,7 @@ _set_env_value() {
 # Bootout + bootstrap launchd agent, wait for /health.
 _reload_agent() {
   launchctl bootout "$DOMAIN" "$PLIST" 2>/dev/null || true
-  launchctl bootstrap "$DOMAIN" "$PLIST"
+  bootstrap_agent
   for _ in 1 2 3 4 5 6; do
     if health_ok; then
       return 0
@@ -1029,6 +1083,7 @@ COMMANDS=(
   status           "Show enabled flag + server + launchd state"
   test             "[text]  Synthesize and play a phrase (default: greeting)"
   restart          "Kick the launchd agent to restart the server"
+  autostart        "[on|off|status]  Start the server at login (default: on). Off = only via 'tts on'"
   logs             "Tail server log"
   provider         "<edge-tts|openai|google>  Switch TTS provider and restart"
   voice            "<name>  [edge-tts] Switch voice (e.g. ru-RU-DmitryNeural) and restart"

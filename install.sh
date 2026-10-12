@@ -179,7 +179,20 @@ rm -f "$OLD_PLIST"
 if launchctl print "$SERVICE" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN" "$PLIST_TARGET" 2>/dev/null || true
 fi
-launchctl bootstrap "$DOMAIN" "$PLIST_TARGET"
+# Keep a deliberate `tts autostart off`: bootstrap refuses disabled services, so
+# lift the flag just for this call and restore it.
+autostart_was_disabled=0
+if launchctl print-disabled "$DOMAIN" 2>/dev/null \
+    | grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)"; then
+    autostart_was_disabled=1
+    launchctl enable "$SERVICE"
+fi
+bootstrap_rc=0
+launchctl bootstrap "$DOMAIN" "$PLIST_TARGET" || bootstrap_rc=$?
+if [[ "$autostart_was_disabled" -eq 1 ]]; then
+    launchctl disable "$SERVICE"
+fi
+[[ "$bootstrap_rc" -eq 0 ]] || fail "launchctl bootstrap failed (exit $bootstrap_rc)"
 launchctl kickstart -k "$SERVICE" >/dev/null 2>&1 || true
 say "launchd agent loaded: $AGENT_LABEL"
 

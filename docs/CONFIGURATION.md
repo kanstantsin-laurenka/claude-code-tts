@@ -32,6 +32,18 @@ tts provider google      # Google Chirp 3 HD (requires: tts google-key)
 
 Defaults: `ru-RU-SvetlanaNeural`, `+0%`, `+0Hz`.
 
+## Autostart
+
+By default the launchd agent starts at login and stays idle in memory. To start it only when you need it:
+
+```bash
+tts autostart off   # persistent across reboots; running server is left alone
+tts on              # starts the server on demand (autostart stays off)
+tts autostart on    # back to the default
+```
+
+`tts autostart off` uses `launchctl disable`, which survives reboots. `tts on`, `tts restart`, `tts provider …` and `install.sh` lift the flag only for the load call and restore it, so none of them silently re-enable autostart. `tts uninstall` clears the flag. Check the current state with `tts autostart` or `tts status`.
+
 ### openai knobs
 
 | Command | Effect | Env var |

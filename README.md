@@ -44,6 +44,7 @@ tts toggle          Toggle on/off
 tts status          enabled flag + server health + lock state + launchd state
 tts test [text]     Synthesize and play a phrase
 tts restart         Kick the launchd agent
+tts autostart [on|off]  Start the server at login (default on); off = only via `tts on`
 tts logs            tail -f server log
 tts voice <name>    Switch voice (e.g. ru-RU-DmitryNeural, en-US-AriaNeural)
 tts rate <val>      Set speech rate (e.g. +15%, -10%)
