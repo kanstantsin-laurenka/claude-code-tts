@@ -23,14 +23,30 @@ warn() { printf '\033[1;33m!\033[0m %s\n' "$1"; }
 fail() { printf '\033[0;31m✗\033[0m %s\n' "$1" >&2; exit 1; }
 
 # 1. Prerequisites
-command -v python3 >/dev/null 2>&1 || fail "python3 not found"
-PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-PY_MAJ="$(echo "$PY_VER" | cut -d. -f1)"
-PY_MIN="$(echo "$PY_VER" | cut -d. -f2)"
-if [[ "$PY_MAJ" -lt 3 ]] || { [[ "$PY_MAJ" -eq 3 ]] && [[ "$PY_MIN" -lt 10 ]]; }; then
-    fail "python3 is $PY_VER; need >= 3.10"
-fi
-say "python3 $PY_VER"
+# Pick the interpreter ourselves instead of trusting `python3` from PATH: on macOS
+# it is often /usr/bin/python3 (3.9, too old) even when Homebrew has newer ones.
+# Order: versions CI covers (3.13 → 3.10) first, then 3.14 (newer than CI), then
+# whatever `python3` is. Homebrew prefixes are listed explicitly because
+# launchd/non-login shells may not have them on PATH.
+PYTHON=""
+PY_VER=""
+for candidate in python3.13 python3.12 python3.11 python3.10 python3.14 python3; do
+    for dir in "" /opt/homebrew/bin/ /usr/local/bin/; do
+        if [[ -z "$dir" ]]; then
+            path="$(command -v "$candidate" 2>/dev/null || true)"
+        else
+            path="${dir}${candidate}"
+        fi
+        [[ -n "$path" && -x "$path" ]] || continue
+        if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            PYTHON="$path"
+            PY_VER="$("$path" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+            break 2
+        fi
+    done
+done
+[[ -n "$PYTHON" ]] || fail "no Python >= 3.10 found — install one: brew install python@3.12"
+say "python $PY_VER ($PYTHON)"
 command -v afplay >/dev/null 2>&1 || fail "afplay missing (ships with macOS)"
 command -v jq     >/dev/null 2>&1 || fail "jq not found — install via: brew install jq"
 say "afplay, jq found"
@@ -49,7 +65,7 @@ fi
 
 # 3. venv + deps
 if [[ ! -d "$REPO_DIR/venv" ]]; then
-    python3 -m venv "$REPO_DIR/venv"
+    "$PYTHON" -m venv "$REPO_DIR/venv"
     say "venv created"
 else
     say "venv already present"
