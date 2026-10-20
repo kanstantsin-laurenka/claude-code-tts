@@ -28,7 +28,7 @@ import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DEFAULT_LIMIT = 990_000
@@ -96,7 +96,7 @@ class UsageCounter:
     ) -> None:
         self._path = path
         self._limit = limit
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
         self._lock = threading.Lock()
 
     def reserve(self, n: int) -> Reservation | None:

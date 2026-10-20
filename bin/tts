@@ -975,10 +975,10 @@ cmd_doctor() {
   if [[ -x "$REPO_DIR/venv/bin/python" ]]; then
     local py_ver
     py_ver=$("$REPO_DIR/venv/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if "$REPO_DIR/venv/bin/python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
-      _ok "venv python: $py_ver (>= 3.10 required)"
+    if "$REPO_DIR/venv/bin/python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+      _ok "venv python: $py_ver (>= 3.11 required)"
     else
-      _fail "venv python: $py_ver — need >= 3.10; recreate the venv (rm -rf venv && tts install)"
+      _fail "venv python: $py_ver — need >= 3.11; recreate the venv (rm -rf venv && tts install)"
     fi
   fi
 

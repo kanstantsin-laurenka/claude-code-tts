@@ -430,7 +430,7 @@ def test_google_locked_returns_423_and_counts_nothing(google_server):
 
 
 def test_google_limit_exhaustion_switches_to_edge(google_server):
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     from claude_code_tts.usage import month_key
 
@@ -438,7 +438,7 @@ def test_google_limit_exhaustion_switches_to_edge(google_server):
         json.dumps(
             {
                 "version": 1,
-                "month": month_key(datetime.now(timezone.utc)),
+                "month": month_key(datetime.now(UTC)),
                 "chars": 989_995,
                 "flags": ["warn_80", "warn_90"],
             }

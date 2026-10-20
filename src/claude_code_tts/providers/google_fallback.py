@@ -35,7 +35,7 @@ Related: docs/CONFIGURATION.md (glossary and alert table).
 import sys
 import threading
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..usage import CRITICAL_PCT, Reservation, UsageCounter
 from . import ProviderError, TTSProvider
@@ -177,7 +177,7 @@ class GoogleWithFallback(TTSProvider):
         with self._stats_lock:
             self._fallback_count += 1
             self._last_fallback = {
-                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "reason": reason,
             }
         # An edge ProviderError propagates so the server answers 502 as it does today.

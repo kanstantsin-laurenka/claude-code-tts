@@ -28,7 +28,7 @@ if [[ "$all_deletes" -eq 1 ]]; then
 fi
 
 if [[ ! -x "$VENV_PY" ]]; then
-  echo "pre-push: venv missing at $VENV_PY — skipping tests (run ./install.sh to enable)" >&2
+  echo "pre-push: venv missing at $VENV_PY — skipping tests (run scripts/dev-setup.sh to enable)" >&2
   exit 0
 fi
 

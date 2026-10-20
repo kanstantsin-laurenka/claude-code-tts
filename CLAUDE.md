@@ -27,7 +27,8 @@ Architecture and config details live in `@docs/ARCHITECTURE.md` and `@docs/CONFI
   - `tests/test_cli_onoff.py` runs the real `bin/tts` and hooks against stub `launchctl`/`curl`/PlistBuddy (`PLISTBUDDY` env override) — extend it when changing on/off or config-command behavior.
 - `docs/plans/` — design docs for larger features (limits, alert numbers, locked decisions), e.g. `google-chirp-provider.md`
 - `install.sh` / `uninstall.sh` — idempotent, re-runnable
-- `scripts/dev-setup.sh` — one-shot contributor setup (venv, dev deps, git hooks)
+- `scripts/dev-setup.sh` — one-shot contributor setup (`uv sync` into `venv/`, git hooks)
+- `pyproject.toml` + `uv.lock` — dependencies (runtime + `dev` group) and pinned versions; `.python-version` — dev Python. There is no `requirements.txt`: without uv, `install.sh` reads the ranges from `pyproject.toml`
 - `.githooks/pre-push` — runs `pytest -q` before `git push`; opt-in via `scripts/dev-setup.sh`
 
 ## Development commands
@@ -35,13 +36,13 @@ Architecture and config details live in `@docs/ARCHITECTURE.md` and `@docs/CONFI
 One-time setup on a fresh clone:
 
 ```bash
-scripts/dev-setup.sh    # venv + dev deps + enables .githooks/pre-push via core.hooksPath
+brew install uv        # once; dev setup requires uv
+scripts/dev-setup.sh    # uv sync into venv/ (runtime + dev deps) + enables .githooks/pre-push via core.hooksPath
 ```
 
 Day-to-day Python work runs inside the repo-local venv:
 
 ```bash
-venv/bin/pip install -r requirements-dev.txt   # dev deps (pytest, ruff, tzdata — Linux CI has no zone database)
 venv/bin/pytest tests/ -v                      # run tests
 venv/bin/ruff format .                         # format
 venv/bin/ruff check .                          # lint
@@ -49,14 +50,16 @@ venv/bin/ruff check .                          # lint
 
 The `pre-push` hook runs the full pytest suite before any `git push`; bypass with `git push --no-verify`. The hook is only active after `scripts/dev-setup.sh` sets `core.hooksPath=.githooks`.
 
-CI runs ruff lint + pytest on push/PR across Python 3.10 / 3.11 / 3.12 / 3.13 — see `.github/workflows/test.yml`.
+Dependencies change in `pyproject.toml`, never by `pip install` into the venv. Afterwards run `uv lock`, then `scripts/dev-setup.sh`. CI (`uv sync --locked`) fails if `uv.lock` is stale.
+
+CI runs ruff lint + pytest on push/PR across Python 3.11 / 3.12 / 3.13 / 3.14 via uv — see `.github/workflows/test.yml`.
 
 Use the `/verify` skill to run lint + format-check + tests in one shot before marking work done. A fresh worktree has no `venv/`: run `scripts/dev-setup.sh` in it first.
 
 ## Code style
 
-- Python 3.10+ target, `src/` layout (package under `src/claude_code_tts/`)
-- Formatter/linter: **ruff** — line-length 100, target `py310`. Config in `pyproject.toml`.
+- Python 3.11+ target (`requires-python`); dev on 3.14 (`.python-version`), `src/` layout (package under `src/claude_code_tts/`)
+- Formatter/linter: **ruff** — line-length 100, target `py311`. Config in `pyproject.toml`.
 - Bash: `set -euo pipefail` at the top of every script; keep `bin/tts` readable — no clever one-liners.
 - `bin/tts` runs on macOS `/bin/bash` 3.2: no associative arrays, `${var,,}`, or `local -n`.
 
@@ -76,5 +79,5 @@ Use the `/verify` skill to run lint + format-check + tests in one shot before ma
 
 - One task = one worktree = one branch = one PR. Create with `git worktree add -b <type>/<short-desc> ../claude-code-tts-<short-name> origin/main`.
 - Branch prefix: `feat/`, `fix/`, `chore/`, `refactor/`.
-- Never commit directly to `main`. Open a PR and let CI (`pytest` on 3.10–3.13) pass before merge.
+- Never commit directly to `main`. Open a PR and let CI (`pytest` on 3.11–3.14) pass before merge.
 - Commit style matches the existing log: `type(scope): short description`, e.g. `feat(google): …` (see `git log --oneline`).

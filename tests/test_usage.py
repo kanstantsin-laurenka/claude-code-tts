@@ -5,7 +5,7 @@ UsageCounter tests — injected clock, real files under tmp_path.
 import json
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -61,14 +61,14 @@ def test_exactly_at_limit_allowed_plus_one_not(tmp_path):
 
 
 def test_pacific_month_boundary():
-    assert month_key(datetime(2026, 10, 1, 6, 59, tzinfo=timezone.utc)) == "2026-09"
-    assert month_key(datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)) == "2026-10"
+    assert month_key(datetime(2026, 10, 1, 6, 59, tzinfo=UTC)) == "2026-09"
+    assert month_key(datetime(2026, 10, 1, 7, 0, tzinfo=UTC)) == "2026-10"
 
 
 def test_pacific_year_boundary():
     # January is PST (UTC-8), so the year flips at 08:00Z.
-    assert month_key(datetime(2027, 1, 1, 7, 59, tzinfo=timezone.utc)) == "2026-12"
-    assert month_key(datetime(2027, 1, 1, 8, 0, tzinfo=timezone.utc)) == "2027-01"
+    assert month_key(datetime(2027, 1, 1, 7, 59, tzinfo=UTC)) == "2026-12"
+    assert month_key(datetime(2027, 1, 1, 8, 0, tzinfo=UTC)) == "2027-01"
 
 
 def test_tz_fallback_when_zone_database_missing(monkeypatch):
@@ -77,14 +77,14 @@ def test_tz_fallback_when_zone_database_missing(monkeypatch):
 
     monkeypatch.setattr(usage_mod, "ZoneInfo", boom)
     monkeypatch.setattr(usage_mod, "_tz_fallback_logged", False)
-    assert month_key(datetime(2026, 9, 15, tzinfo=timezone.utc)) == "2026-09"
+    assert month_key(datetime(2026, 9, 15, tzinfo=UTC)) == "2026-09"
     # Fixed UTC-8: 07:59Z on Oct 1 is still Sep 30 there.
-    assert month_key(datetime(2026, 10, 1, 7, 59, tzinfo=timezone.utc)) == "2026-09"
-    assert month_key(datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)) == "2026-10"
+    assert month_key(datetime(2026, 10, 1, 7, 59, tzinfo=UTC)) == "2026-09"
+    assert month_key(datetime(2026, 10, 1, 8, 0, tzinfo=UTC)) == "2026-10"
 
 
 def test_pacific_zone_loads():
-    # Guards CI: needs tzdata in requirements-dev.txt on Linux runners.
+    # Guards CI: needs tzdata in the pyproject dev group on Linux runners.
     usage_mod.ZoneInfo("America/Los_Angeles")
 
 

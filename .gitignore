@@ -1,4 +1,6 @@
 venv/
+# uv's default env dir; the repo uses venv/ (see scripts/dev-setup.sh)
+.venv/
 __pycache__/
 *.pyc
 *.pyo

@@ -1,13 +1,39 @@
 version: 2
 updates:
+  # Cooldown everywhere: a hijacked release is usually spotted and yanked within days,
+  # and the CI auto-merge cannot tell malicious code from working code. Security
+  # updates ignore cooldown, so known vulnerabilities still get fixed at once.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
 
-  - package-ecosystem: pip
+  # Updates pyproject.toml + uv.lock together. Daily because edge-tts talks to an
+  # unofficial Microsoft endpoint: when it breaks, the fix ships as a new edge-tts
+  # release within a day or two.
+  - package-ecosystem: uv
     directory: /
     schedule:
-      interval: weekly
+      interval: daily
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      # INVARIANT: edge-tts skips the cooldown only because the auto-merge job in
+      # test.yml never merges a PR that touches it — a human merges those by hand.
+      exclude: ["edge-tts"]
+    # A dependency joins the first group that matches, so edge-tts gets its own PR
+    # (kept out of auto-merge). Other minor/patch bumps are grouped; each major bump
+    # comes alone so it can be reviewed by hand.
+    groups:
+      edge-tts:
+        patterns: ["edge-tts"]
+      deps:
+        patterns: ["*"]
+        update-types: [minor, patch]

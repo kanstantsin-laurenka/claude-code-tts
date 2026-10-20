@@ -17,7 +17,7 @@ clean markdown → edge-tts → afplay
 ## Requirements
 
 - macOS
-- Python 3.10+
+- Python 3.11+ — or [uv](https://docs.astral.sh/uv/) (`brew install uv`), which `install.sh` then uses to fetch the right Python itself
 - [Homebrew](https://brew.sh) for installing `jq`
 - [Claude Code](https://claude.ai/code) CLI
 
@@ -115,12 +115,22 @@ tts update       # git pull --rebase, then install.sh
 
 ## Development
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/): `pyproject.toml` declares them, `uv.lock` pins exact versions, and `.python-version` sets the dev Python (3.14).
+
 ```bash
-venv/bin/pip install -r requirements-dev.txt
+brew install uv
+scripts/dev-setup.sh       # venv/ synced from uv.lock (+ dev group) and the pre-push hook
 venv/bin/pytest tests/ -v
 ```
 
-GitHub Actions runs `pytest` on every push across Python 3.10 / 3.11 / 3.12 / 3.13 — see [`.github/workflows/test.yml`](.github/workflows/test.yml).
+After changing dependencies in `pyproject.toml`, refresh the lock and the venv:
+
+```bash
+uv lock
+scripts/dev-setup.sh
+```
+
+GitHub Actions runs `pytest` on every push across Python 3.11 / 3.12 / 3.13 / 3.14 — see [`.github/workflows/test.yml`](.github/workflows/test.yml).
 
 ## Status
 

@@ -70,7 +70,7 @@ Without this, Claude Code's voice response would play into the microphone and en
 | Path | Role | Managed by |
 |---|---|---|
 | `<repo>/` | Source, CLI, scripts | git |
-| `<repo>/venv/` | Python venv with edge-tts | install.sh |
+| `<repo>/venv/` | Python venv with the runtime deps from `uv.lock` (uv; without uv, pip installs the ranges from `pyproject.toml`) | install.sh / scripts/dev-setup.sh |
 | `<repo>/logs/server.log` | launchd stdout+stderr | launchd |
 | `~/.config/claude-code-tts/google-usage.json` | Google monthly char counter | server (`usage.py`) |
 | `~/.claude/settings.json` | Hook registration | patch_settings.py |

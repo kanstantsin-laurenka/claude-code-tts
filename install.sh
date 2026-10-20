@@ -23,30 +23,46 @@ warn() { printf '\033[1;33m!\033[0m %s\n' "$1"; }
 fail() { printf '\033[0;31m✗\033[0m %s\n' "$1" >&2; exit 1; }
 
 # 1. Prerequisites
-# Pick the interpreter ourselves instead of trusting `python3` from PATH: on macOS
-# it is often /usr/bin/python3 (3.9, too old) even when Homebrew has newer ones.
-# Order: versions CI covers (3.13 → 3.10) first, then 3.14 (newer than CI), then
-# whatever `python3` is. Homebrew prefixes are listed explicitly because
-# launchd/non-login shells may not have them on PATH.
+# Prefer uv: it takes the Python version from .python-version (downloading it if
+# missing) and installs exactly what uv.lock pins. uv is optional for users, so
+# without it we fall back to pip + the version ranges in pyproject.toml.
+# Homebrew and uv-installer prefixes are listed explicitly because launchd/non-login
+# shells may not have them on PATH.
+UV=""
+for candidate in "$(command -v uv 2>/dev/null || true)" /opt/homebrew/bin/uv /usr/local/bin/uv \
+        "$HOME/.local/bin/uv"; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+        UV="$candidate"
+        break
+    fi
+done
+MIN_PY_CHECK='import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'
 PYTHON=""
 PY_VER=""
-for candidate in python3.13 python3.12 python3.11 python3.10 python3.14 python3; do
-    for dir in "" /opt/homebrew/bin/ /usr/local/bin/; do
-        if [[ -z "$dir" ]]; then
-            path="$(command -v "$candidate" 2>/dev/null || true)"
-        else
-            path="${dir}${candidate}"
-        fi
-        [[ -n "$path" && -x "$path" ]] || continue
-        if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-            PYTHON="$path"
-            PY_VER="$("$path" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-            break 2
-        fi
+if [[ -n "$UV" ]]; then
+    say "uv found ($UV)"
+else
+    # Pick the interpreter ourselves instead of trusting `python3` from PATH: on macOS
+    # it is often /usr/bin/python3 (3.9, too old) even when Homebrew has newer ones.
+    # Newest first — CI covers every version in this list.
+    for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+        for dir in "" /opt/homebrew/bin/ /usr/local/bin/; do
+            if [[ -z "$dir" ]]; then
+                path="$(command -v "$candidate" 2>/dev/null || true)"
+            else
+                path="${dir}${candidate}"
+            fi
+            [[ -n "$path" && -x "$path" ]] || continue
+            if "$path" -c "$MIN_PY_CHECK" 2>/dev/null; then
+                PYTHON="$path"
+                PY_VER="$("$path" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+                break 2
+            fi
+        done
     done
-done
-[[ -n "$PYTHON" ]] || fail "no Python >= 3.10 found — install one: brew install python@3.12"
-say "python $PY_VER ($PYTHON)"
+    [[ -n "$PYTHON" ]] || fail "no Python >= 3.11 found — install uv (brew install uv) or Python (brew install python@3.14)"
+    say "python $PY_VER ($PYTHON)"
+fi
 command -v afplay >/dev/null 2>&1 || fail "afplay missing (ships with macOS)"
 command -v jq     >/dev/null 2>&1 || fail "jq not found — install via: brew install jq"
 say "afplay, jq found"
@@ -70,15 +86,38 @@ if [[ ! -f "$PLIST_TARGET" ]]; then
 fi
 
 # 3. venv + deps
-if [[ ! -d "$REPO_DIR/venv" ]]; then
-    "$PYTHON" -m venv "$REPO_DIR/venv"
-    say "venv created"
+if [[ -n "$UV" ]]; then
+    # --no-dev keeps pytest/ruff out of a user install, while --inexact leaves them in
+    # place when scripts/dev-setup.sh already put them into this same venv. A venv
+    # built on a different Python than .python-version is recreated by uv.
+    UV_PROJECT_ENVIRONMENT="$REPO_DIR/venv" "$UV" sync --project "$REPO_DIR" \
+        --locked --no-dev --inexact --quiet
+    say "venv synced with uv.lock ($("$REPO_DIR/venv/bin/python" -V))"
 else
-    say "venv already present"
+    # An older install may have left a venv on a Python below the minimum, and a venv
+    # made by uv has no pip — rebuild either one with the interpreter found above.
+    if [[ -x "$REPO_DIR/venv/bin/pip" ]] && "$REPO_DIR/venv/bin/python" -c "$MIN_PY_CHECK" 2>/dev/null; then
+        say "venv already present"
+    else
+        "$PYTHON" -m venv --clear "$REPO_DIR/venv"
+        say "venv created (python $PY_VER)"
+    fi
+    "$REPO_DIR/venv/bin/pip" install --quiet --upgrade pip
+    # Unlike the uv path, this one is not reproducible: it installs the newest versions
+    # inside pyproject's ranges. That keeps edge-tts fresh for users without uv, which
+    # matters because Microsoft-side breakages are fixed by new edge-tts releases.
+    deps=()
+    while IFS= read -r dep; do
+        deps+=("$dep")
+    done < <("$REPO_DIR/venv/bin/python" -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    print("\n".join(tomllib.load(f)["project"]["dependencies"]))
+' "$REPO_DIR/pyproject.toml")
+    [[ ${#deps[@]} -gt 0 ]] || fail "no [project].dependencies found in pyproject.toml"
+    "$REPO_DIR/venv/bin/pip" install --quiet --upgrade "${deps[@]}"
+    say "dependencies installed/updated (pip): ${deps[*]}"
 fi
-"$REPO_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$REPO_DIR/venv/bin/pip" install --quiet --upgrade -r "$REPO_DIR/requirements.txt"
-say "edge-tts installed/updated"
 
 # 4. Logs dir
 mkdir -p "$REPO_DIR/logs"

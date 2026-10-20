@@ -42,7 +42,7 @@ try:
     from openai import AsyncOpenAI
 except ImportError:
     print(
-        "error: openai package not installed — run: venv/bin/pip install -r requirements.txt",
+        "error: openai package not installed — run: scripts/dev-setup.sh",
         file=sys.stderr,
     )
     sys.exit(1)

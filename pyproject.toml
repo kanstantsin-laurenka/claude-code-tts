@@ -1,3 +1,29 @@
+[project]
+name = "claude-code-tts"
+version = "0.1.0"
+description = "Speaks Claude Code responses aloud on macOS"
+# 3.10 reached end of life in October 2026. CI covers every version from here up to
+# the dev version pinned in .python-version.
+requires-python = ">=3.11"
+dependencies = [
+    "edge-tts>=7.2.8",
+    "openai>=3.26.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+    # Linux CI runners ship no zone database; usage.py needs America/Los_Angeles.
+    "tzdata",
+]
+
+[tool.uv]
+# Not an installable package: the server and tests import it via PYTHONPATH=src
+# (launchd plist, pytest pythonpath), so uv only manages the venv's dependencies.
+package = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "scripts"]
@@ -5,7 +31,7 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["venv", "logs", ".pytest_cache"]
 
 [tool.ruff.lint]
