@@ -37,8 +37,13 @@ PLISTBUDDY="${PLISTBUDDY:-/usr/libexec/PlistBuddy}"
 have_agent() {
   launchctl print "$SERVICE" >/dev/null 2>&1
 }
+# ⚠️ WARNING: capture launchctl output before grepping, never `launchctl … | grep -q`.
+# grep -q exits on the first match, launchctl then dies of SIGPIPE, and under
+# `set -o pipefail` the whole check reads as "no match" — a flaky wrong answer.
 agent_running() {
-  launchctl print "$SERVICE" 2>/dev/null | grep -q 'state = running'
+  local agent_info
+  agent_info=$(launchctl print "$SERVICE" 2>/dev/null) || return 1
+  grep -q 'state = running' <<<"$agent_info"
 }
 health_ok() {
   curl -sf --max-time 1 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1
@@ -48,8 +53,9 @@ health_ok() {
 # no separate flag file — `tts off` disables + boots out the agent, so the state
 # survives reboots and cannot drift from the real server.
 agent_disabled() {
-  launchctl print-disabled "$DOMAIN" 2>/dev/null \
-    | grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)"
+  local disabled_list
+  disabled_list=$(launchctl print-disabled "$DOMAIN" 2>/dev/null) || return 1
+  grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)" <<<"$disabled_list"
 }
 tts_is_on() {
   ! agent_disabled

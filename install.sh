@@ -189,8 +189,9 @@ elif [[ "$old_flag_val" == "0" ]] || [[ "$fresh_install" -eq 1 ]]; then
     launchctl disable "$SERVICE"
 fi
 TTS_ON=1
-if launchctl print-disabled "$DOMAIN" 2>/dev/null \
-        | grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)"; then
+# Captured first: `launchctl … | grep -q` can lose the match to SIGPIPE under pipefail.
+disabled_list="$(launchctl print-disabled "$DOMAIN" 2>/dev/null || true)"
+if grep -Eq "\"${AGENT_LABEL}\" => (disabled|true)" <<<"$disabled_list"; then
     TTS_ON=0
 fi
 if launchctl print "$SERVICE" >/dev/null 2>&1; then
