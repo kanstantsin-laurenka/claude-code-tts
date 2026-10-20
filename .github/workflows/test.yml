@@ -52,3 +52,40 @@ jobs:
 
       - name: Run pytest
         run: uv run --frozen pytest tests/ -v
+
+  # Merges Dependabot PRs once every lint/pytest leg is green. A CI job instead of
+  # GitHub's auto-merge because that needs branch protection, which a private repo on
+  # the free plan cannot have. Pushes made with GITHUB_TOKEN do not trigger workflows,
+  # so main gets no extra CI run — the same tree was just tested on the PR.
+  automerge:
+    needs: [lint, pytest]
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # Dependabot PRs get a read-only GITHUB_TOKEN unless the job asks for more.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3.1.0
+
+      # Left for a human: major bumps (breaking changes), a package whose maintainers
+      # changed (a common sign of a takeover), and edge-tts — it skips Dependabot's
+      # cooldown (see .github/dependabot.yml), so nothing else guards it.
+      - name: Merge minor/patch updates
+        if: >-
+          contains(fromJSON('["version-update:semver-minor", "version-update:semver-patch"]'), steps.meta.outputs.update-type)
+          && steps.meta.outputs.maintainer-changes != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DEPENDENCY_NAMES: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          case ",${DEPENDENCY_NAMES// /}," in
+            *,edge-tts,*)
+              echo "edge-tts update: left for manual merge"
+              exit 0
+              ;;
+          esac
+          gh pr merge --squash "$PR_URL"

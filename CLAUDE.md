@@ -52,7 +52,7 @@ The `pre-push` hook runs the full pytest suite before any `git push`; bypass wit
 
 Dependencies change in `pyproject.toml`, never by `pip install` into the venv. Afterwards run `uv lock`, then `scripts/dev-setup.sh`. CI (`uv sync --locked`) fails if `uv.lock` is stale.
 
-CI runs ruff lint + pytest on push/PR across Python 3.11 / 3.12 / 3.13 / 3.14 via uv — see `.github/workflows/test.yml`.
+CI runs ruff lint + pytest on push/PR across Python 3.11 / 3.12 / 3.13 / 3.14 via uv — see `.github/workflows/test.yml`. Its `automerge` job merges green Dependabot minor/patch PRs. **INVARIANT:** it must never merge `edge-tts`, majors, or maintainer changes — `edge-tts` skips the Dependabot cooldown on that promise (README → Dependency updates).
 
 Use the `/verify` skill to run lint + format-check + tests in one shot before marking work done. A fresh worktree has no `venv/`: run `scripts/dev-setup.sh` in it first.
 

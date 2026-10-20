@@ -132,6 +132,16 @@ scripts/dev-setup.sh
 
 GitHub Actions runs `pytest` on every push across Python 3.11 / 3.12 / 3.13 / 3.14 — see [`.github/workflows/test.yml`](.github/workflows/test.yml).
 
+### Dependency updates
+
+Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes updates to `uv.lock` daily, after a 7-day cooldown. Once CI is green, the `automerge` job squash-merges minor/patch bumps. These stay open for a manual merge:
+
+- major bumps;
+- updates to a package whose maintainers changed;
+- `edge-tts` — it skips the cooldown so Microsoft-side fixes arrive fast, and in exchange a human merges it.
+
+Merged updates reach an installed copy on the next `tts update`.
+
 ## Status
 
 Personal tool, happy to accept issues.
