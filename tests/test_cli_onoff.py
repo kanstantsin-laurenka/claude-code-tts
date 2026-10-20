@@ -9,6 +9,7 @@ Business rules covered:
 - launchd refuses to bootstrap a disabled service, so `tts on` must enable first
 - config commands never start a stopped server
 - hooks speak only while the server answers /health
+- yandex-voice sets voice and role together and rejects pairs SpeechKit would refuse
 
 Dependencies: bash, jq (hooks and CLI use it)
 """
@@ -71,6 +72,13 @@ echo "plistbuddy $*" >> "$FAKE_STATE/calls"
 exit 0
 """
 
+# Keeps keyed commands (`tts provider yandex`, …) away from the real Keychain on macOS:
+# every lookup reports "item not found" (exit 44, like the real `security`).
+FAKE_SECURITY = """#!/bin/bash
+echo "security $1" >> "$FAKE_STATE/calls"
+exit 44
+"""
+
 
 class Env:
     def __init__(self, tmp_path: Path):
@@ -82,6 +90,7 @@ class Env:
             ("launchctl", FAKE_LAUNCHCTL),
             ("curl", FAKE_CURL),
             ("plistbuddy", FAKE_PLISTBUDDY),
+            ("security", FAKE_SECURITY),
         ):
             path = fakebin / name
             path.write_text(body)
@@ -265,3 +274,98 @@ def test_status_hook_is_silent_when_off_and_reports_when_on(env: Env) -> None:
 
     env.set_on()
     assert "TTS: on" in env.run(STATUS_HOOK).stdout
+
+
+def plist_writes(env: Env) -> list[str]:
+    return [c for c in env.calls() if c.startswith("plistbuddy")]
+
+
+def test_yandex_voice_with_role_sets_both_and_reloads_once(env: Env) -> None:
+    env.set_on()
+
+    result = env.tts("yandex-voice", "dasha", "friendly")
+
+    assert result.returncode == 0, result.stderr
+    assert "yandex voice: dasha, role: friendly (server restarted)" in result.stdout
+    writes = plist_writes(env)
+    assert any("YANDEX_TTS_VOICE dasha" in c for c in writes)
+    assert any("YANDEX_TTS_ROLE friendly" in c for c in writes)
+    assert sum("launchctl bootstrap" in c for c in env.calls()) == 1
+
+
+def test_yandex_voice_without_role_clears_stored_role(env: Env) -> None:
+    env.set_off()
+
+    result = env.tts("yandex-voice", "filipp")
+
+    assert result.returncode == 0, result.stderr
+    assert "role: default" in result.stdout
+    assert any("Delete :EnvironmentVariables:YANDEX_TTS_ROLE" in c for c in plist_writes(env))
+    assert not env.loaded
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["alice"], "unknown Yandex voice 'alice'"),
+        (["masha", "evil"], "does not support role 'evil' (supported: good strict friendly)"),
+        (["filipp", "good"], "voice 'filipp' has no roles"),
+    ],
+)
+def test_yandex_voice_rejects_invalid_pairs_without_writing(
+    env: Env, args: list[str], message: str
+) -> None:
+    result = env.tts("yandex-voice", *args)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert plist_writes(env) == []
+
+
+@pytest.mark.parametrize("value", ["0.05", "3.5", "fast"])
+def test_yandex_speed_rejects_out_of_range(env: Env, value: str) -> None:
+    result = env.tts("yandex-speed", value)
+
+    assert result.returncode == 2
+    assert plist_writes(env) == []
+
+
+def test_yandex_speed_accepts_range_edge(env: Env) -> None:
+    result = env.tts("yandex-speed", "3.0")
+
+    assert result.returncode == 0, result.stderr
+    assert any("YANDEX_TTS_SPEED 3.0" in c for c in plist_writes(env))
+
+
+def test_provider_yandex_saves_and_warns_about_missing_key(env: Env) -> None:
+    env.set_off()
+
+    result = env.tts("provider", "yandex")
+
+    assert result.returncode == 0, result.stderr
+    assert any("TTS_PROVIDER yandex" in c for c in plist_writes(env))
+    assert "no Yandex API key in Keychain — run: tts yandex-key" in result.stderr
+
+
+def test_yandex_voices_lists_roles(env: Env) -> None:
+    result = env.tts("yandex-voices")
+
+    assert result.returncode == 0, result.stderr
+    assert "masha       good strict friendly" in result.stdout
+    assert "filipp      (none)" in result.stdout
+
+
+@pytest.mark.parametrize("region", ["ru", "kz"])
+def test_yandex_region_saves_value(env: Env, region: str) -> None:
+    result = env.tts("yandex-region", region)
+
+    assert result.returncode == 0, result.stderr
+    assert any(f"YANDEX_TTS_REGION {region}" in c for c in plist_writes(env))
+
+
+def test_yandex_region_rejects_unknown(env: Env) -> None:
+    result = env.tts("yandex-region", "eu")
+
+    assert result.returncode == 2
+    assert "region must be 'ru'" in result.stderr
+    assert plist_writes(env) == []

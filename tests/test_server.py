@@ -1,5 +1,5 @@
 """
-Server tests — mock providers (edge-tts, openai or google) and afplay so tests don't
+Server tests — mock providers (edge-tts, openai, google or yandex) and afplay so tests don't
 need network or audio output. A fresh ThreadingHTTPServer is spun per-test on
 a random port to avoid interference with the live launchd-managed server on
 7852.
@@ -647,3 +647,98 @@ def test_tldr_fallback_empty_env_keeps_silent_skip(monkeypatch, tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.fixture
+def yandex_server(monkeypatch, tmp_path):
+    """Fresh server with provider=yandex: key and httpx faked, afplay stubbed."""
+    import base64
+
+    import httpx
+
+    port = _free_port()
+    monkeypatch.setenv("TTS_PORT", str(port))
+    monkeypatch.setenv("TTS_LOCK_FILE", str(tmp_path / "nl-recording.lock"))
+    monkeypatch.setenv("TTS_PROVIDER", "yandex")
+    monkeypatch.setenv("TTS_TLDR_ONLY", "0")
+    monkeypatch.setenv("YANDEX_TTS_VOICE", "dasha")
+    monkeypatch.setenv("YANDEX_TTS_ROLE", "friendly")
+    monkeypatch.setenv("YANDEX_TTS_REGION", "kz")
+    monkeypatch.delenv("YANDEX_TTS_SPEED", raising=False)
+
+    import claude_code_tts.keychain as keychain_mod
+    import claude_code_tts.providers.yandex as yandex_mod
+
+    state = {"status": 200, "key": "AQVN-test-dummy"}
+    monkeypatch.setattr(keychain_mod, "get_yandex_key", lambda: state["key"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if state["status"] != 200:
+            return httpx.Response(state["status"], text="boom")
+        chunk = {"result": {"audioChunk": {"data": base64.b64encode(b"\x00").decode()}}}
+        return httpx.Response(200, text=json.dumps(chunk))
+
+    real_client = httpx.AsyncClient
+
+    def factory(*a, **kw):
+        kw["transport"] = httpx.MockTransport(handler)
+        return real_client(*a, **kw)
+
+    monkeypatch.setattr(yandex_mod.httpx, "AsyncClient", factory)
+
+    def start():
+        import claude_code_tts.server as srv
+
+        importlib.reload(srv)
+        _patch_afplay(monkeypatch, srv)
+        httpd = srv.ThreadingHTTPServer((srv.HOST, port), srv.Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        servers.append(httpd)
+        return srv
+
+    servers: list = []
+    try:
+        yield {"port": port, "state": state, "start": start}
+    finally:
+        for httpd in servers:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+def test_yandex_health_reports_config_without_key(yandex_server):
+    yandex_server["start"]()
+    status, body = _request(yandex_server["port"], "GET", "/health")
+    assert status == 200
+    cfg = json.loads(body)["config"]
+    assert cfg == {
+        "provider": "yandex",
+        "region": "kz",
+        "voice": "dasha",
+        "role": "friendly",
+        "speed": 1.0,
+        "key_loaded": True,
+    }
+    assert "AQVN" not in body.decode()
+
+
+def test_yandex_speak_ok(yandex_server):
+    yandex_server["start"]()
+    status, body = _request(yandex_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 202
+    assert json.loads(body)["queued"] is True
+
+
+def test_yandex_failure_returns_502_without_fallback(yandex_server):
+    yandex_server["state"]["status"] = 401
+    yandex_server["start"]()
+    status, body = _request(yandex_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 502
+    assert "HTTP 401" in json.loads(body)["error"]
+
+
+def test_yandex_missing_key_returns_502(yandex_server):
+    yandex_server["state"]["key"] = None
+    yandex_server["start"]()
+    status, body = _request(yandex_server["port"], "POST", "/speak", {"text": "Привет"})
+    assert status == 502
+    assert "tts yandex-key" in json.loads(body)["error"]

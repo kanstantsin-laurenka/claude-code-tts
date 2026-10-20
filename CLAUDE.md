@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-`claude-code-tts` speaks Claude Code responses aloud on macOS. Default voice is Microsoft's free neural voices through [edge-tts](https://github.com/rany2/edge-tts); `openai` and `google` (Chirp 3 HD) are optional providers. Data flow: Claude Code `Stop` hook → `hooks/tts-stop.sh` → HTTP POST to `127.0.0.1:7852` → local Python server (launchd-managed) → `clean_text` → TTS provider → `afplay`.
+`claude-code-tts` speaks Claude Code responses aloud on macOS. Default voice is Microsoft's free neural voices through [edge-tts](https://github.com/rany2/edge-tts); `openai`, `google` (Chirp 3 HD) and `yandex` (SpeechKit v3) are optional providers. Data flow: Claude Code `Stop` hook → `hooks/tts-stop.sh` → HTTP POST to `127.0.0.1:7852` → local Python server (launchd-managed) → `clean_text` → TTS provider → `afplay`.
 
 On/off state = the launchd agent being enabled and loaded (no flag file); hooks only check `/health`. Details: `docs/CONFIGURATION.md#on--off`.
 
@@ -18,7 +18,7 @@ Architecture and config details live in `@docs/ARCHITECTURE.md` and `@docs/CONFI
 
 - `bin/tts` — Bash CLI (`on`/`off`/`toggle`/`status`/`test`/`restart`/`voice`/...)
 - `src/claude_code_tts/` — Python package: `server.py`, `clean_text.py`, `keychain.py` (read-only), `usage.py`, `notify.py`
-- `src/claude_code_tts/providers/` — `edge.py`, `openai.py`, `google.py` (REST client), `google_fallback.py` (quota alerts + fallback to edge-tts)
+- `src/claude_code_tts/providers/` — `edge.py`, `openai.py`, `google.py` (REST client), `google_fallback.py` (quota alerts + fallback to edge-tts), `yandex.py` (SpeechKit v3 REST, no fallback)
 - Google monthly quota (Pacific month, 990k limit, sticky switch to edge-tts): see `docs/CONFIGURATION.md#google-knobs`. All policy lives in `google_fallback.py`, not in `google.py` or `usage.py`.
 - `hooks/` — Bash hooks registered in `~/.claude/settings.json` (`tts-stop.sh`, `tts-status.sh`)
 - `scripts/patch_settings.py` — idempotent editor for `~/.claude/settings.json`
@@ -66,9 +66,9 @@ Use the `/verify` skill to run lint + format-check + tests in one shot before ma
 - **Do not run `bin/tts install` / `bin/tts on` / `bin/tts off` / `install.sh` during dev work** unless the user asks. `install` patches the user's real `~/.claude/settings.json`; all of them register, enable or disable the real launchd agent — side effects persist across sessions and reboots.
 - **INVARIANT: config commands must not start a stopped server.** New `tts <setting>` commands apply changes via `_reload_agent`, which only writes the plist while TTS is off.
 - **⚠️ WARNING: `launchctl enable` before `bootstrap`.** launchd refuses to load a disabled service, and `tts off` disables it — any code path that loads the agent must enable it first.
-- **Keychain writes happen only in `bin/tts`**, via `security … -w` prompting on the tty; `keychain.py` is read-only. Never pass a key via argv, and never touch the real Keychain items `-a openai` / `-a google` in experiments.
-- **Interactive commands (`tts google-key`, `tts openai-key`) need a real tty.** `!` in Claude Code has none — test them in a normal terminal.
-- **New `GOOGLE_*`/`OPENAI_*` env vars need no plist template or `install.sh` change** — `install.sh` preserves `EnvironmentVariables` generically.
+- **Keychain writes happen only in `bin/tts`**, via `security … -w` prompting on the tty; `keychain.py` is read-only. Never pass a key via argv, and never touch the real Keychain items `-a openai` / `-a google` / `-a yandex` in experiments.
+- **Interactive commands (`tts google-key`, `tts openai-key`, `tts yandex-key`) need a real tty.** `!` in Claude Code has none — test them in a normal terminal.
+- **New `GOOGLE_*`/`OPENAI_*`/`YANDEX_*` env vars need no plist template or `install.sh` change** — `install.sh` preserves `EnvironmentVariables` generically.
 - **Don't touch `.claude/settings.local.json`** — it's personal and git-ignored globally.
 - **`install.sh` must stay idempotent**, including the legacy-migration path from `~/.claude/skills/tts/`, and must preserve the current on/off state on re-run (a first install defaults to off; an old `enabled` flag file is read once, then deleted). If you change the install flow, re-run it mentally against a fresh install, an existing install, and a legacy install.
 

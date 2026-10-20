@@ -19,7 +19,7 @@ hooks/tts-stop.sh  (20 lines)
 src/claude_code_tts/server.py  (launchd agent com.claude-code.tts)
     1. clean_for_tts(text)  — strip markdown/code
     2. if /tmp/nl-recording.lock exists → return 423 (skip playback)
-    3. provider → temp MP3   (edge-tts | openai | google, chosen by TTS_PROVIDER)
+    3. provider → temp MP3   (edge-tts | openai | google | yandex, chosen by TTS_PROVIDER)
     4. SIGTERM previous afplay → start new afplay
     │
     ▼

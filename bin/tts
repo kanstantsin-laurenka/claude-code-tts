@@ -1,14 +1,17 @@
 #!/bin/bash
 # Claude Code TTS control CLI.
-# Three providers: edge-tts (default, free), openai (paid, key from Keychain) and
-# google (Chirp 3 HD, free tier guarded by a local monthly char counter, key from Keychain).
+# Four providers: edge-tts (default, free), openai (paid, key from Keychain),
+# google (Chirp 3 HD, free tier guarded by a local monthly char counter, key from Keychain)
+# and yandex (SpeechKit v3, paid, key from Keychain).
 # edge-tts knobs: voice, rate, pitch.  openai knobs: openai-voice, openai-model, speed.
-# google knobs: google-voice, google-speed.
+# google knobs: google-voice, google-speed.  yandex knobs: yandex-voice, yandex-speed,
+# yandex-region.
 set -euo pipefail
 
 KEYCHAIN_SERVICE="claude-code-tts"
 KEYCHAIN_ACCOUNT_OPENAI="openai"
 KEYCHAIN_ACCOUNT_GOOGLE="google"
+KEYCHAIN_ACCOUNT_YANDEX="yandex"
 GOOGLE_USAGE_FILE_DEFAULT="$HOME/.config/claude-code-tts/google-usage.json"
 
 # Resolve symlinks so the CLI works when invoked via ~/.local/bin/tts too.
@@ -335,7 +338,7 @@ _openai_get_plist_value() {
   fi
 }
 
-# --- Keychain key helpers (shared by openai and google) ---------------------------------
+# --- Keychain key helpers (shared by openai, google and yandex) ---------------------------------
 
 _key_stored() {
   security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$1" >/dev/null 2>&1
@@ -360,16 +363,24 @@ _key_shape_problem() {
         echo "expected AIza... with 35-45 chars"
       fi
       ;;
+    "$KEYCHAIN_ACCOUNT_YANDEX")
+      # Yandex Cloud API keys start with AQVN and are ~40 chars. An IAM token (t1.…)
+      # is the usual mistake: it also works, but expires after 12 hours.
+      if [[ "$stored" != AQVN* ]] || [[ "${#stored}" -lt 30 ]] || [[ "${#stored}" -gt 60 ]]; then
+        echo "expected AQVN... with 30-60 chars (a service account API key, not an IAM token)"
+      fi
+      ;;
   esac
 }
 
-# Print a one-line hint if the Keychain key for <openai|google> is missing or
+# Print a one-line hint if the Keychain key for <openai|google|yandex> is missing or
 # obviously malformed. Returns non-zero so callers can gate follow-up output.
 _warn_key_unusable() {
   local kind="$1" account label
   case "$kind" in
     openai) account="$KEYCHAIN_ACCOUNT_OPENAI"; label="OpenAI" ;;
     google) account="$KEYCHAIN_ACCOUNT_GOOGLE"; label="Google" ;;
+    yandex) account="$KEYCHAIN_ACCOUNT_YANDEX"; label="Yandex" ;;
     *) echo "internal error: unknown key kind '$kind'" >&2; return 2 ;;
   esac
   if ! _key_stored "$account"; then
@@ -428,16 +439,16 @@ _clear_key() {
 }
 
 cmd_provider() {
-  local name="${1:?usage: tts provider <edge-tts|openai|google>}"
+  local name="${1:?usage: tts provider <edge-tts|openai|google|yandex>}"
   case "$name" in
-    edge-tts|openai|google) ;;
-    *) echo "error: provider must be 'edge-tts', 'openai' or 'google'" >&2; return 2 ;;
+    edge-tts|openai|google|yandex) ;;
+    *) echo "error: provider must be 'edge-tts', 'openai', 'google' or 'yandex'" >&2; return 2 ;;
   esac
   _update_env TTS_PROVIDER "$name" && echo "provider: $name ($RELOAD_NOTE)"
   # Nudge the user if they switched to a keyed provider without a usable key —
-  # openai would 401 on the next /speak, google would silently fall back to
-  # edge-tts, and the only trace of either is logs/server.log.
-  if [[ "$name" == "openai" || "$name" == "google" ]]; then
+  # openai/yandex would 401 on the next /speak, google would silently fall back
+  # to edge-tts, and the only trace of either is logs/server.log.
+  if [[ "$name" != "edge-tts" ]]; then
     _warn_key_unusable "$name" || true
   fi
 }
@@ -479,6 +490,132 @@ cmd_google_speed() {
     return 2
   }
   _update_env GOOGLE_TTS_SPEED "$value" && echo "google speed: $value ($RELOAD_NOTE)"
+}
+
+cmd_yandex_key() {
+  _store_key "$KEYCHAIN_ACCOUNT_YANDEX" "Yandex" yandex
+}
+
+cmd_yandex_key_clear() {
+  _clear_key "$KEYCHAIN_ACCOUNT_YANDEX" "Yandex"
+}
+
+# Voice -> supported roles for SpeechKit API v3 (general model). Single source of
+# truth for `tts yandex-voices`, voice/role validation in `yandex-voice` and `doctor`.
+# The first role listed is the voice's default; "-" means the voice has no roles.
+# Source: https://aistudio.yandex.ru/docs/ru/speechkit/tts/voices (checked 2026-10)
+# Returns 1 for an unknown voice. Case form keeps bash 3.2 compatibility.
+_yandex_roles_for_voice() {
+  case "$1" in
+    masha)     echo "good strict friendly" ;;
+    dasha)     echo "neutral good friendly" ;;
+    jane)      echo "neutral good evil" ;;
+    omazh)     echo "neutral evil" ;;
+    julia)     echo "neutral strict" ;;
+    lera)      echo "neutral friendly" ;;
+    marina)    echo "neutral whisper friendly" ;;
+    alexander) echo "neutral good" ;;
+    kirill)    echo "neutral strict good" ;;
+    anton)     echo "neutral good" ;;
+    ermil)     echo "neutral good" ;;
+    zahar)     echo "neutral good" ;;
+    filipp)    echo "-" ;;
+    madi_ru)   echo "-" ;;
+    saule_ru)  echo "neutral strict whisper" ;;
+    zamira_ru) echo "neutral strict friendly" ;;
+    zhanar_ru) echo "neutral strict friendly" ;;
+    yulduz_ru) echo "neutral strict friendly whisper" ;;
+    john)      echo "-" ;;
+    lea)       echo "-" ;;
+    *)         return 1 ;;
+  esac
+}
+
+_yandex_known_voices() {
+  echo "masha dasha jane omazh julia lera marina saule_ru zamira_ru zhanar_ru yulduz_ru" \
+    "alexander kirill anton ermil zahar filipp madi_ru john lea"
+}
+
+# Empty role is always valid (= the voice's default). Returns 1 otherwise if the
+# voice is unknown or does not support the role.
+_yandex_role_supported_by() {
+  local voice="$1" role="$2" roles r
+  roles=$(_yandex_roles_for_voice "$voice") || return 1
+  [[ -z "$role" ]] && return 0
+  for r in $roles; do
+    [[ "$r" == "$role" ]] && return 0
+  done
+  return 1
+}
+
+# Voice and role are set together so a voice switch can never leave behind a role
+# the new voice rejects (SpeechKit answers that with an error, i.e. silence).
+cmd_yandex_voice() {
+  local name="${1:?usage: tts yandex-voice <name> [role]  (e.g. masha, dasha friendly — see: tts yandex-voices)}"
+  local role="${2:-}" roles
+  if ! roles=$(_yandex_roles_for_voice "$name"); then
+    echo "error: unknown Yandex voice '$name' — see: tts yandex-voices" >&2
+    return 2
+  fi
+  if ! _yandex_role_supported_by "$name" "$role"; then
+    if [[ "$roles" == "-" ]]; then
+      echo "error: voice '$name' has no roles — run: tts yandex-voice $name" >&2
+    else
+      echo "error: voice '$name' does not support role '$role' (supported: $roles)" >&2
+    fi
+    return 2
+  fi
+  _set_env_value YANDEX_TTS_VOICE "$name" || return 1
+  if [[ -n "$role" ]]; then
+    _set_env_value YANDEX_TTS_ROLE "$role" || return 1
+  else
+    "$PLISTBUDDY" -c "Delete :EnvironmentVariables:YANDEX_TTS_ROLE" "$PLIST" 2>/dev/null || true
+  fi
+  _reload_agent && echo "yandex voice: $name, role: ${role:-default} ($RELOAD_NOTE)"
+}
+
+cmd_yandex_voices() {
+  local v roles current_voice current_role
+  current_voice=$(_openai_get_plist_value YANDEX_TTS_VOICE "masha")
+  current_role=$(_openai_get_plist_value YANDEX_TTS_ROLE "")
+  echo "Yandex SpeechKit voices (API v3; first role = default):"
+  echo
+  printf "  %-10s  %s\n" "Voice" "Roles"
+  printf "  %-10s  %s\n" "----------" "----------------"
+  for v in $(_yandex_known_voices); do
+    roles=$(_yandex_roles_for_voice "$v")
+    [[ "$roles" == "-" ]] && roles="(none)"
+    printf "  %-10s  %s\n" "$v" "$roles"
+  done
+  echo
+  echo "john is English (US), lea is German; all others speak Russian."
+  echo "Current:  voice=$current_voice  role=${current_role:-default}"
+  echo "Change:   tts yandex-voice <name> [role]"
+  echo "Listen:   https://yandex.cloud/ru/services/speechkit#demo"
+}
+
+# The key only works against the Yandex Cloud installation that issued it: Russia
+# (console.yandex.cloud) or Kazakhstan (kz.console.yandex.cloud).
+cmd_yandex_region() {
+  local region="${1:?usage: tts yandex-region <ru|kz>  (ru = console.yandex.cloud, kz = kz.console.yandex.cloud)}"
+  case "$region" in
+    ru|kz) ;;
+    *) echo "error: region must be 'ru' (console.yandex.cloud) or 'kz' (kz.console.yandex.cloud)" >&2; return 2 ;;
+  esac
+  _update_env YANDEX_TTS_REGION "$region" && echo "yandex region: $region ($RELOAD_NOTE)"
+}
+
+cmd_yandex_speed() {
+  local value="${1:?usage: tts yandex-speed <value>  (0.1 to 3.0, e.g. 1.1)}"
+  if [[ ! "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "error: speed must be a positive number (e.g. 0.9, 1.25, 2.0)" >&2
+    return 2
+  fi
+  awk -v v="$value" 'BEGIN{ if (v+0 < 0.1 || v+0 > 3.0) exit 1 }' || {
+    echo "error: speed must be between 0.1 and 3.0" >&2
+    return 2
+  }
+  _update_env YANDEX_TTS_SPEED "$value" && echo "yandex speed: $value ($RELOAD_NOTE)"
 }
 
 cmd_openai_voice() {
@@ -708,6 +845,10 @@ _default_for_key() {
     GOOGLE_TTS_SPEED) echo "1.0" ;;
     GOOGLE_TTS_MONTHLY_CHAR_LIMIT) echo "990000" ;;
     GOOGLE_TTS_USAGE_FILE) echo "$GOOGLE_USAGE_FILE_DEFAULT" ;;
+    YANDEX_TTS_VOICE) echo "masha" ;;
+    YANDEX_TTS_ROLE)  echo "(voice default)" ;;
+    YANDEX_TTS_SPEED) echo "1.0" ;;
+    YANDEX_TTS_REGION) echo "ru" ;;
     *)                echo "" ;;
   esac
 }
@@ -718,13 +859,14 @@ cmd_config() {
     return 1
   fi
   echo "Config from $PLIST"
-  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed|google-voice|google-speed' or PlistBuddy + 'tts restart')"
+  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed|google-voice|google-speed|yandex-voice|yandex-speed|yandex-region' or PlistBuddy + 'tts restart')"
   echo
   local keys=(
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
     OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED OPENAI_TTS_INSTRUCTIONS
     GOOGLE_TTS_VOICE GOOGLE_TTS_SPEED GOOGLE_TTS_MONTHLY_CHAR_LIMIT GOOGLE_TTS_USAGE_FILE
+    YANDEX_TTS_REGION YANDEX_TTS_VOICE YANDEX_TTS_ROLE YANDEX_TTS_SPEED
     TTS_TLDR_ONLY TTS_TLDR_FALLBACK_TEXT
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
@@ -751,6 +893,11 @@ cmd_config() {
     printf "  %-30s = %s\n" "Google key" "(stored in Keychain)"
   else
     printf "  %-30s = %s\n" "Google key" "(not stored — run: tts google-key)"
+  fi
+  if _key_stored "$KEYCHAIN_ACCOUNT_YANDEX"; then
+    printf "  %-30s = %s\n" "Yandex key" "(stored in Keychain)"
+  else
+    printf "  %-30s = %s\n" "Yandex key" "(not stored — run: tts yandex-key)"
   fi
 }
 
@@ -945,6 +1092,43 @@ cmd_doctor() {
   fi
 
   echo
+  echo "== Yandex provider =="
+  _yandex_problem() {
+    if [[ "$active_provider" == "yandex" ]]; then _fail "$1"; else _warn "$1"; fi
+  }
+  if _key_stored "$KEYCHAIN_ACCOUNT_YANDEX"; then
+    local yandex_problem
+    yandex_problem=$(_key_shape_problem "$KEYCHAIN_ACCOUNT_YANDEX")
+    if [[ -z "$yandex_problem" ]]; then
+      _ok "Yandex key present in Keychain (format looks valid)"
+    else
+      _yandex_problem "Yandex key in Keychain looks malformed ($yandex_problem) — re-run: tts yandex-key"
+    fi
+  else
+    _yandex_problem "Yandex key not stored — run: tts yandex-key"
+  fi
+  local y_region y_voice y_role y_speed
+  y_region=$(_openai_get_plist_value YANDEX_TTS_REGION "ru")
+  case "$y_region" in
+    ru) _ok "yandex region: ru (key must come from console.yandex.cloud)" ;;
+    kz) _ok "yandex region: kz (key must come from kz.console.yandex.cloud)" ;;
+    *)  _yandex_problem "yandex region '$y_region' is not ru or kz (server uses ru) — run: tts yandex-region" ;;
+  esac
+  y_voice=$(_openai_get_plist_value YANDEX_TTS_VOICE "masha")
+  y_role=$(_openai_get_plist_value YANDEX_TTS_ROLE "")
+  if _yandex_role_supported_by "$y_voice" "$y_role"; then
+    _ok "yandex voice: $y_voice, role: ${y_role:-default}"
+  else
+    _yandex_problem "yandex voice '$y_voice' with role '${y_role:-default}' is not a known pair — run: tts yandex-voices"
+  fi
+  y_speed=$(_openai_get_plist_value YANDEX_TTS_SPEED "1.0")
+  if awk -v v="$y_speed" 'BEGIN{ exit !(v+0 >= 0.1 && v+0 <= 3.0) }'; then
+    _ok "yandex speed: $y_speed (0.1-3.0)"
+  else
+    _yandex_problem "yandex speed '$y_speed' outside 0.1-3.0 (server clamps it) — run: tts yandex-speed"
+  fi
+
+  echo
   echo "== launchd plist =="
   if [[ -f "$PLIST" ]]; then
     if plutil -lint "$PLIST" >/dev/null 2>&1; then
@@ -1057,7 +1241,7 @@ COMMANDS=(
   test             "[text]  Synthesize and play a phrase (default: greeting)"
   restart          "Kick the launchd agent to restart the server"
   logs             "Tail server log"
-  provider         "<edge-tts|openai|google>  Switch TTS provider and restart"
+  provider         "<edge-tts|openai|google|yandex>  Switch TTS provider and restart"
   voice            "<name>  [edge-tts] Switch voice (e.g. ru-RU-DmitryNeural) and restart"
   rate             "<val>   [edge-tts] Set speech rate (e.g. +15%, -10%) and restart"
   pitch            "<val>   [edge-tts] Set pitch (e.g. +50Hz, -20Hz) and restart"
@@ -1075,6 +1259,12 @@ COMMANDS=(
   google-key-clear "[google]  Remove the Google API key from Keychain"
   google-voice     "<name>  [google] Switch Chirp 3 HD voice (e.g. ru-RU-Chirp3-HD-Aoede) and restart"
   google-speed     "<val>   [google] Set speech speed 0.25–2.0 (e.g. 1.1) and restart"
+  yandex-key       "[yandex]  Prompt for and store the Yandex Cloud API key in Keychain"
+  yandex-key-clear "[yandex]  Remove the Yandex API key from Keychain"
+  yandex-voice     "<name> [role]  [yandex] Switch voice + role (e.g. masha friendly) and restart"
+  yandex-voices    "[yandex]  List Yandex voices and their roles"
+  yandex-speed     "<val>   [yandex] Set speech speed 0.1–3.0 (e.g. 1.1) and restart"
+  yandex-region    "<ru|kz>  [yandex] Yandex Cloud installation that issued the key and restart"
   tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
   tldr-fallback        "<text>  Phrase spoken when TL;DR is missing (overrides silent-skip)"
   tldr-fallback-clear  "Remove the TL;DR fallback phrase (restore silent-skip)"

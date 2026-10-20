@@ -1,11 +1,12 @@
 """
 KEYCHAIN
 
-Read-only wrappers around the macOS `security` CLI for the OpenAI and Google API keys.
+Read-only wrappers around the macOS `security` CLI for the OpenAI, Google and Yandex
+API keys.
 
 Business rules:
-  - Service name "claude-code-tts"; accounts "openai" and "google" — must match what
-    bin/tts writes.
+  - Service name "claude-code-tts"; accounts "openai", "google" and "yandex" — must
+    match what bin/tts writes.
   - Writes are NOT done here: bin/tts runs `security add-generic-password ... -w` with
     no value so `security` prompts on the tty and the key never appears in argv/ps.
   - Never log or echo the key itself.
@@ -17,6 +18,7 @@ import subprocess
 SERVICE = "claude-code-tts"
 ACCOUNT_OPENAI = "openai"
 ACCOUNT_GOOGLE = "google"
+ACCOUNT_YANDEX = "yandex"
 
 
 def get_key(account: str) -> str | None:
@@ -42,3 +44,7 @@ def get_openai_key() -> str | None:
 
 def get_google_key() -> str | None:
     return get_key(ACCOUNT_GOOGLE)
+
+
+def get_yandex_key() -> str | None:
+    return get_key(ACCOUNT_YANDEX)

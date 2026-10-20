@@ -4,18 +4,20 @@ All knobs live as environment variables in the launchd plist at `~/Library/Launc
 
 ## Providers
 
-The server supports three synthesis backends. Exactly one is active at a time; switch with `tts provider`.
+The server supports four synthesis backends. Exactly one is active at a time; switch with `tts provider`.
 
 | Provider | Default | Cost | Needs network | Needs key |
 |---|---|---|---|---|
 | `edge-tts` | yes | free | yes (Microsoft endpoint) | no |
 | `openai` | no | paid | yes (OpenAI API) | yes (macOS Keychain) |
 | `google` | no | free up to 1M chars/month, then paid | yes (Google Cloud TTS) | yes (macOS Keychain) |
+| `yandex` | no | paid, ~650 ₽ / 1M chars, no free tier | yes (Yandex SpeechKit) | yes (macOS Keychain) |
 
 ```bash
 tts provider edge-tts    # free Microsoft neural voices (default)
 tts provider openai      # OpenAI TTS API (requires: tts openai-key)
 tts provider google      # Google Chirp 3 HD (requires: tts google-key)
+tts provider yandex      # Yandex SpeechKit v3 (requires: tts yandex-key)
 ```
 
 `TTS_PROVIDER` is the underlying env var. Unknown values fall back to `edge-tts` with a log line.
@@ -56,9 +58,9 @@ Defaults: model `gpt-4o-mini-tts`, voice `nova`, speed `1.0`.
 
 Authoritative pricing: [OpenAI API pricing](https://openai.com/api/pricing/).
 
-**`rate`/`pitch` are edge-tts-only; `speed` is openai-only; `google-speed` is google-only.** The CLI does not prevent you from setting a knob for the inactive provider — it just won't have any effect until you switch to that provider.
+**`rate`/`pitch` are edge-tts-only; `speed` is openai-only; `google-speed` is google-only; `yandex-speed` is yandex-only.** The CLI does not prevent you from setting a knob for the inactive provider — it just won't have any effect until you switch to that provider.
 
-**Error behavior:** if an OpenAI call fails (auth, rate limit, no network, no key), the server returns HTTP 502 to the Stop hook, which swallows it silently. The `openai` provider has **no** automatic fallback to edge-tts (the `google` provider does — see below).
+**Error behavior:** if an OpenAI call fails (auth, rate limit, no network, no key), the server returns HTTP 502 to the Stop hook, which swallows it silently. The `openai` and `yandex` providers have **no** automatic fallback to edge-tts (the `google` provider does — see below).
 
 ### google knobs
 
@@ -115,6 +117,48 @@ rm ~/.config/claude-code-tts/google-usage.json
 A corrupt file is renamed to `google-usage.json.corrupt` and counting restarts from 0. `uninstall.sh --purge` deletes it along with the rest of `~/.config/claude-code-tts`.
 
 **Caveats:** one-shot warnings (80%/90%/switch) are marked as delivered when the request is counted. If that audio is then dropped (microphone lock, or a newer message interrupts it) the spoken phrase is not repeated that month; the notification still appears. The local count can drift from Google's real billing (other clients using the same key, a deleted usage file, no refunds for 5xx/timeouts that may have been billed). The margin absorbs small drift only; keep the $5 budget alert on the Google Cloud billing account as a second line of defense.
+
+### yandex knobs
+
+Yandex SpeechKit, API v3 (REST `utteranceSynthesis`). There is **no free tier** and the Yandex Cloud starter grant is currently not offered to new clients, so every request is billed. Yandex's own "Alice" voice is not available through the API; `masha` is the default.
+
+| Command | Effect | Env var |
+|---|---|---|
+| `tts yandex-key` | prompt for and store the API key in Keychain | — |
+| `tts yandex-key-clear` | remove stored key from Keychain | — |
+| `tts yandex-voice <name> [role]` | set voice and role together; no role = the voice's default | `YANDEX_TTS_VOICE`, `YANDEX_TTS_ROLE` |
+| `tts yandex-voices` | list voices and the roles each supports | — |
+| `tts yandex-speed <value>` | set speed (0.1–3.0) | `YANDEX_TTS_SPEED` |
+| `tts yandex-region <ru\|kz>` | Yandex Cloud installation that issued the key | `YANDEX_TTS_REGION` |
+
+Defaults: voice `masha`, role unset (masha's default is `good`), speed `1.0`, region `ru`.
+
+**Region.** Yandex Cloud runs two separate installations with their own accounts, IAM and API hosts: Russia (`console.yandex.cloud`, `tts.api.cloud.yandex.net`) and Kazakhstan (`kz.console.yandex.cloud`, `tts.api.yandexcloud.kz`). An API key works only against the installation that issued it — a mismatch answers 401. If your console URL starts with `kz.`, run `tts yandex-region kz`. The Kazakhstan installation accepted a foreign (Georgian) Visa card for an individual non-resident where the Russian one refused it. Voice and role are set in one command because SpeechKit rejects a role the voice does not have; the CLI validates the pair against the table in `bin/tts` (`_yandex_roles_for_voice`), and `tts doctor` re-checks it after manual plist edits. Listen to the voices in the [SpeechKit demo](https://yandex.cloud/ru/services/speechkit#demo).
+
+**Pricing (as of October 2026):** 0.1626 ₽ per request for the `general` model, counted per started 250-character block (1–250 chars = 1 unit, 251–500 = 2, …) — about 650 ₽ per 1M characters. A typical TL;DR (100–400 chars) costs 0.16–0.33 ₽. Failed requests caused by Yandex server errors are not billed. Authoritative: [SpeechKit pricing](https://aistudio.yandex.ru/docs/ru/speechkit/pricing). Yandex Cloud budgets only send notifications, they do not stop the API — set one up anyway (Billing → Budgets).
+
+**Getting an API key** (one-time, in the [Yandex Cloud console](https://console.yandex.cloud)):
+
+Use the console of your installation (`console.yandex.cloud` or `kz.console.yandex.cloud`) for every step.
+
+1. **Billing account.** Billing → create a billing account and link a card. Its status must be `ACTIVE`; with no active billing account SpeechKit answers every request with an error.
+2. **Cloud and folder.** The billing account needs a linked cloud ("Linked clouds" on the billing account page). Use the `default` folder of your cloud or create one (e.g. `claude-code-tts`).
+3. **Service account.** In the folder: Identity and Access Management → Service accounts → Create. Name it e.g. `claude-code-tts` and give it the role **`ai.speechkit-tts.user`**. Requests are billed to the folder this account lives in, so no folder ID is configured anywhere.
+4. **API key.** Open the service account → Create new key → **API key**. Scope: **`yc.ai.speechkitTts.execute`** (the console requires one). Optionally set an expiry. Copy the secret now — it is shown only once. It normally starts with `AQVN`.
+5. **Store it** in a normal terminal (needs a tty; Claude Code's `!` has none):
+
+   ```bash
+   tts yandex-key
+   tts yandex-region kz     # only for kz.console.yandex.cloud
+   tts provider yandex
+   tts test
+   ```
+
+An IAM token (`t1.…`) is not a substitute: it expires after 12 hours. `tts doctor` warns when the stored key does not look like `AQVN…`.
+
+**API key storage:** Keychain service `claude-code-tts`, account `yandex`; same prompt flow as `tts openai-key`. Sent only as the `Authorization: Api-Key …` header; never put in a URL, log line, or `/health`.
+
+**Error behavior:** like `openai` — any failure (bad key, inactive billing, unsupported role, network) returns HTTP 502 and the Stop hook stays silent; the reason is in `logs/server.log` (`tts logs`). Text longer than 250 characters is sent with `unsafeMode`, so SpeechKit splits it itself instead of rejecting it.
 
 ## Manual knobs
 

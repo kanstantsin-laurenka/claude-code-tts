@@ -97,7 +97,7 @@ fi
 # 6. Render launchd plist (preserve user-set EnvironmentVariables across re-install)
 #
 # Re-running install.sh (directly or via `tts update`) used to stomp the whole
-# plist, wiping knobs that `tts provider|voice|rate|pitch|openai-*|speed|google-*|tldr`
+# plist, wiping knobs that `tts provider|voice|rate|pitch|openai-*|speed|google-*|yandex-*|tldr`
 # had written to EnvironmentVariables. Users had to reconfigure everything
 # after each update. Now: capture existing EnvironmentVariables, render the
 # fresh template, then overlay captured values on top. The overlay is generic,

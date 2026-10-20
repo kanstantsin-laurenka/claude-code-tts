@@ -2,7 +2,8 @@
 TTS SERVER
 
 HTTP bridge between Claude Code Stop-hook (hooks/tts-stop.sh) and a pluggable
-TTS provider (edge-tts by default; OpenAI or Google Chirp 3 HD optional).
+TTS provider (edge-tts by default; OpenAI, Google Chirp 3 HD or Yandex
+SpeechKit optional).
 
 Business rules:
   - Only ever one afplay process alive: a new /speak SIGTERMs the previous
@@ -19,7 +20,7 @@ Business rules:
     skips playback. Hammerspoon's whisper hotkey creates that lock while the
     microphone is recording — playing TTS during that window would leak the
     voice into the transcription.
-  - On provider failure (edge-tts/OpenAI/network), return 5xx and let the
+  - On provider failure (edge-tts/OpenAI/Yandex/network), return 5xx and let the
     caller (tts-stop.sh) swallow it silently — Claude Code must never be
     blocked by TTS. Exception: the google provider is wrapped by
     GoogleWithFallback, which retries on edge-tts first, so a Google failure
@@ -31,7 +32,8 @@ Business rules:
     thread-safe.
 
 Dependencies: edge-tts + openai + httpx (pip); afplay and osascript (macOS
-  built-ins); `security` CLI for reading the OpenAI/Google keys from the Keychain.
+  built-ins); `security` CLI for reading the OpenAI/Google/Yandex keys from the
+  Keychain.
 Related: hooks/tts-stop.sh, ~/.claude/settings.json (Stop hook),
          /tmp/nl-recording.lock (written by Hammerspoon STT config in TTS2 project).
 """
@@ -55,6 +57,7 @@ from .providers.edge import EdgeTTSProvider
 from .providers.google import GoogleTTSProvider
 from .providers.google_fallback import GoogleWithFallback
 from .providers.openai import OpenAIProvider
+from .providers.yandex import YandexTTSProvider
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TTS_PORT", "7852"))
@@ -100,6 +103,14 @@ GOOGLE_USAGE_FILE = os.environ.get(
     os.path.expanduser("~/.config/claude-code-tts/google-usage.json"),
 )
 
+YANDEX_VOICE = os.environ.get("YANDEX_TTS_VOICE", "masha")
+# Empty = the voice's own default role (e.g. "good" for masha).
+YANDEX_ROLE = os.environ.get("YANDEX_TTS_ROLE", "")
+# "ru" (console.yandex.cloud) or "kz" (kz.console.yandex.cloud) — must match where the key
+# was issued.
+YANDEX_REGION = os.environ.get("YANDEX_TTS_REGION", "ru")
+YANDEX_SPEED = _parse_speed(os.environ.get("YANDEX_TTS_SPEED", "1.0"), "YANDEX_TTS_SPEED")
+
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
 
 TLDR_ONLY = os.environ.get("TTS_TLDR_ONLY", "1") == "1"
@@ -130,6 +141,10 @@ def _make_provider() -> TTSProvider:
             usage_mod.UsageCounter(GOOGLE_USAGE_FILE, GOOGLE_LIMIT),
             # Module attribute lookup at build time so tests can patch notify.send.
             notify_mod.send,
+        )
+    if PROVIDER_NAME == "yandex":
+        return YandexTTSProvider(
+            YANDEX_VOICE, YANDEX_ROLE, YANDEX_SPEED, keychain.get_yandex_key(), YANDEX_REGION
         )
     # Unknown values fall through to edge-tts so a typo in TTS_PROVIDER doesn't
     # brick the server — just log and use the free default.

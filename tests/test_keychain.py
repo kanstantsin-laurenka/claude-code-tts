@@ -47,4 +47,5 @@ def test_wrappers_delegate(monkeypatch):
     monkeypatch.setattr(keychain, "get_key", lambda account: seen.append(account) or "k")
     assert keychain.get_openai_key() == "k"
     assert keychain.get_google_key() == "k"
-    assert seen == ["openai", "google"]
+    assert keychain.get_yandex_key() == "k"
+    assert seen == ["openai", "google", "yandex"]
