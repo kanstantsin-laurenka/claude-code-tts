@@ -664,6 +664,7 @@ def yandex_server(monkeypatch, tmp_path):
     monkeypatch.setenv("YANDEX_TTS_VOICE", "dasha")
     monkeypatch.setenv("YANDEX_TTS_ROLE", "friendly")
     monkeypatch.setenv("YANDEX_TTS_REGION", "kz")
+    monkeypatch.setenv("YANDEX_TTS_PITCH", "-120")
     monkeypatch.delenv("YANDEX_TTS_SPEED", raising=False)
 
     import claude_code_tts.keychain as keychain_mod
@@ -716,6 +717,7 @@ def test_yandex_health_reports_config_without_key(yandex_server):
         "voice": "dasha",
         "role": "friendly",
         "speed": 1.0,
+        "pitch": -120.0,
         "key_loaded": True,
     }
     assert "AQVN" not in body.decode()
@@ -742,3 +744,16 @@ def test_yandex_missing_key_returns_502(yandex_server):
     status, body = _request(yandex_server["port"], "POST", "/speak", {"text": "Привет"})
     assert status == 502
     assert "tts yandex-key" in json.loads(body)["error"]
+
+
+def test_invalid_yandex_pitch_does_not_crash_server(monkeypatch):
+    """A malformed YANDEX_TTS_PITCH must not brick the server; it falls back to 0."""
+    monkeypatch.setenv("YANDEX_TTS_PITCH", "high")
+    monkeypatch.setenv("TTS_PORT", str(_free_port()))
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    assert srv.YANDEX_PITCH == 0.0

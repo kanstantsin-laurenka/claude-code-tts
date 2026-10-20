@@ -77,7 +77,7 @@ OPENAI_VOICE = os.environ.get("OPENAI_TTS_VOICE", "nova")
 OPENAI_INSTRUCTIONS = os.environ.get("OPENAI_TTS_INSTRUCTIONS", "")
 
 
-def _parse_speed(raw: str, name: str = "OPENAI_TTS_SPEED") -> float:
+def _parse_float(raw: str, name: str = "OPENAI_TTS_SPEED", default: float = 1.0) -> float:
     # A bad value here would otherwise crash module import → launchd would loop
     # restarts forever. Match the unknown-TTS_PROVIDER fallback below: log and
     # use the safe default.
@@ -85,17 +85,17 @@ def _parse_speed(raw: str, name: str = "OPENAI_TTS_SPEED") -> float:
         return float(raw)
     except ValueError:
         print(
-            f"[tts] invalid {name}={raw!r}, using 1.0",
+            f"[tts] invalid {name}={raw!r}, using {default}",
             file=sys.stderr,
             flush=True,
         )
-        return 1.0
+        return default
 
 
-OPENAI_SPEED = _parse_speed(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
+OPENAI_SPEED = _parse_float(os.environ.get("OPENAI_TTS_SPEED", "1.0"))
 
 GOOGLE_VOICE = os.environ.get("GOOGLE_TTS_VOICE", "ru-RU-Chirp3-HD-Aoede")
-GOOGLE_SPEED = _parse_speed(os.environ.get("GOOGLE_TTS_SPEED", "1.0"), "GOOGLE_TTS_SPEED")
+GOOGLE_SPEED = _parse_float(os.environ.get("GOOGLE_TTS_SPEED", "1.0"), "GOOGLE_TTS_SPEED")
 # Local guard under Google's 1M free tier; see usage.py for why it is 990k.
 GOOGLE_LIMIT = usage_mod.parse_limit(os.environ.get("GOOGLE_TTS_MONTHLY_CHAR_LIMIT"))
 GOOGLE_USAGE_FILE = os.environ.get(
@@ -109,7 +109,11 @@ YANDEX_ROLE = os.environ.get("YANDEX_TTS_ROLE", "")
 # "ru" (console.yandex.cloud) or "kz" (kz.console.yandex.cloud) — must match where the key
 # was issued.
 YANDEX_REGION = os.environ.get("YANDEX_TTS_REGION", "ru")
-YANDEX_SPEED = _parse_speed(os.environ.get("YANDEX_TTS_SPEED", "1.0"), "YANDEX_TTS_SPEED")
+YANDEX_SPEED = _parse_float(os.environ.get("YANDEX_TTS_SPEED", "1.0"), "YANDEX_TTS_SPEED")
+# pitchShift in Hz; 0 = the voice's natural pitch.
+YANDEX_PITCH = _parse_float(
+    os.environ.get("YANDEX_TTS_PITCH", "0"), "YANDEX_TTS_PITCH", default=0.0
+)
 
 MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1500"))
 
@@ -144,7 +148,12 @@ def _make_provider() -> TTSProvider:
         )
     if PROVIDER_NAME == "yandex":
         return YandexTTSProvider(
-            YANDEX_VOICE, YANDEX_ROLE, YANDEX_SPEED, keychain.get_yandex_key(), YANDEX_REGION
+            YANDEX_VOICE,
+            YANDEX_ROLE,
+            YANDEX_SPEED,
+            keychain.get_yandex_key(),
+            YANDEX_REGION,
+            YANDEX_PITCH,
         )
     # Unknown values fall through to edge-tts so a typo in TTS_PROVIDER doesn't
     # brick the server — just log and use the free default.

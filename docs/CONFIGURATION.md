@@ -129,9 +129,10 @@ Yandex SpeechKit, API v3 (REST `utteranceSynthesis`). There is **no free tier** 
 | `tts yandex-voice <name> [role]` | set voice and role together; no role = the voice's default | `YANDEX_TTS_VOICE`, `YANDEX_TTS_ROLE` |
 | `tts yandex-voices` | list voices and the roles each supports | — |
 | `tts yandex-speed <value>` | set speed (0.1–3.0) | `YANDEX_TTS_SPEED` |
+| `tts yandex-pitch <Hz>` | shift pitch, −1000…1000 Hz (`-100` lower, `+50` higher, `0` natural) | `YANDEX_TTS_PITCH` |
 | `tts yandex-region <ru\|kz>` | Yandex Cloud installation that issued the key | `YANDEX_TTS_REGION` |
 
-Defaults: voice `masha`, role unset (masha's default is `good`), speed `1.0`, region `ru`.
+Defaults: voice `masha`, role unset (masha's default is `good`), speed `1.0`, pitch `0`, region `ru`.
 
 **Region.** Yandex Cloud runs two separate installations with their own accounts, IAM and API hosts: Russia (`console.yandex.cloud`, `tts.api.cloud.yandex.net`) and Kazakhstan (`kz.console.yandex.cloud`, `tts.api.yandexcloud.kz`). An API key works only against the installation that issued it — a mismatch answers 401. If your console URL starts with `kz.`, run `tts yandex-region kz`. The Kazakhstan installation accepted a foreign (Georgian) Visa card for an individual non-resident where the Russian one refused it. Voice and role are set in one command because SpeechKit rejects a role the voice does not have; the CLI validates the pair against the table in `bin/tts` (`_yandex_roles_for_voice`), and `tts doctor` re-checks it after manual plist edits. Listen to the voices in the [SpeechKit demo](https://yandex.cloud/ru/services/speechkit#demo).
 
@@ -144,7 +145,7 @@ Use the console of your installation (`console.yandex.cloud` or `kz.console.yand
 1. **Billing account.** Billing → create a billing account and link a card. Its status must be `ACTIVE`; with no active billing account SpeechKit answers every request with an error.
 2. **Cloud and folder.** The billing account needs a linked cloud ("Linked clouds" on the billing account page). Use the `default` folder of your cloud or create one (e.g. `claude-code-tts`).
 3. **Service account.** In the folder: Identity and Access Management → Service accounts → Create. Name it e.g. `claude-code-tts` and give it the role **`ai.speechkit-tts.user`**. Requests are billed to the folder this account lives in, so no folder ID is configured anywhere.
-4. **API key.** Open the service account → Create new key → **API key**. Scope: **`yc.ai.speechkitTts.execute`** (the console requires one). Optionally set an expiry. Copy the secret now — it is shown only once. It normally starts with `AQVN`.
+4. **API key.** Open the service account → Create new key → **API key**. Scope: **`yc.ai.speechkitTts.execute`** (the console requires one). Optionally set an expiry. Copy the secret now — it is shown only once. Yandex does not document the key format (seen prefixes: `AQVN…`, `AQWJ…`).
 5. **Store it** in a normal terminal (needs a tty; Claude Code's `!` has none):
 
    ```bash
@@ -154,7 +155,7 @@ Use the console of your installation (`console.yandex.cloud` or `kz.console.yand
    tts test
    ```
 
-An IAM token (`t1.…`) is not a substitute: it expires after 12 hours. `tts doctor` warns when the stored key does not look like `AQVN…`.
+An IAM token (`t1.…`) is not a substitute: it expires after 12 hours. `tts doctor` warns when the stored key looks like an IAM token, contains spaces, or is not 30–80 chars long.
 
 **API key storage:** Keychain service `claude-code-tts`, account `yandex`; same prompt flow as `tts openai-key`. Sent only as the `Authorization: Api-Key …` header; never put in a URL, log line, or `/health`.
 

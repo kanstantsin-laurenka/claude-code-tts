@@ -98,6 +98,25 @@ def test_empty_role_is_not_sent(monkeypatch, tmp_path):
     assert json.loads(seen[0].content)["hints"] == [{"voice": "masha"}, {"speed": 1.0}]
 
 
+def test_nonzero_pitch_is_sent_as_its_own_hint(monkeypatch, tmp_path):
+    seen = _install(monkeypatch, _ok)
+    p = yandex_mod.YandexTTSProvider(VOICE, "good", 1.0, KEY, pitch=-150.0)
+    _run(p, "x", tmp_path / "o.mp3")
+    assert json.loads(seen[0].content)["hints"] == [
+        {"voice": "masha"},
+        {"role": "good"},
+        {"speed": 1.0},
+        {"pitchShift": -150.0},
+    ]
+
+
+def test_pitch_clamped_and_logged(capfd):
+    assert yandex_mod.YandexTTSProvider(VOICE, "", 1.0, KEY, pitch=5000.0).pitch == 1000.0
+    assert yandex_mod.YandexTTSProvider(VOICE, "", 1.0, KEY, pitch=-5000.0).pitch == -1000.0
+    err = capfd.readouterr().err
+    assert "YANDEX_TTS_PITCH" in err and "clamped" in err
+
+
 @pytest.mark.parametrize("sep", ["", "\n", "\r\n", "\n\n  "])
 def test_stream_framing_variants(monkeypatch, tmp_path, sep):
     # The REST gateway streams concatenated JSON objects; don't depend on exact separators.
@@ -230,6 +249,7 @@ def test_describe_never_contains_key():
         "voice": VOICE,
         "role": "good",
         "speed": 1.0,
+        "pitch": 0.0,
         "key_loaded": True,
     }
     assert KEY not in json.dumps(d)

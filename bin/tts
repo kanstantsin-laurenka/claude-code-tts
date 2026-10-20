@@ -5,7 +5,7 @@
 # and yandex (SpeechKit v3, paid, key from Keychain).
 # edge-tts knobs: voice, rate, pitch.  openai knobs: openai-voice, openai-model, speed.
 # google knobs: google-voice, google-speed.  yandex knobs: yandex-voice, yandex-speed,
-# yandex-region.
+# yandex-pitch, yandex-region.
 set -euo pipefail
 
 KEYCHAIN_SERVICE="claude-code-tts"
@@ -364,10 +364,14 @@ _key_shape_problem() {
       fi
       ;;
     "$KEYCHAIN_ACCOUNT_YANDEX")
-      # Yandex Cloud API keys start with AQVN and are ~40 chars. An IAM token (t1.…)
-      # is the usual mistake: it also works, but expires after 12 hours.
-      if [[ "$stored" != AQVN* ]] || [[ "${#stored}" -lt 30 ]] || [[ "${#stored}" -gt 60 ]]; then
-        echo "expected AQVN... with 30-60 chars (a service account API key, not an IAM token)"
+      # Yandex does not document the API key format and real keys differ in prefix
+      # (AQVN…, AQWJ…), so only known mistakes are flagged: an IAM token (t1.…) works
+      # but expires after 12 hours; whitespace or a length far from ~40 chars means a
+      # bad paste.
+      if [[ "$stored" == t1.* ]]; then
+        echo "looks like an IAM token (t1.…), which expires in 12 hours — create a service account API key"
+      elif [[ "$stored" =~ [[:space:]] ]] || [[ "${#stored}" -lt 30 ]] || [[ "${#stored}" -gt 80 ]]; then
+        echo "expected a service account API key: 30-80 chars, no spaces"
       fi
       ;;
   esac
@@ -592,6 +596,19 @@ cmd_yandex_voices() {
   echo "Current:  voice=$current_voice  role=${current_role:-default}"
   echo "Change:   tts yandex-voice <name> [role]"
   echo "Listen:   https://yandex.cloud/ru/services/speechkit#demo"
+}
+
+cmd_yandex_pitch() {
+  local value="${1:?usage: tts yandex-pitch <Hz>  (-1000 to 1000, e.g. -100 lower, +50 higher, 0 natural)}"
+  if [[ ! "$value" =~ ^[+-]?[0-9]+$ ]]; then
+    echo "error: pitch must be a whole number of Hz (e.g. -100, +50, 0)" >&2
+    return 2
+  fi
+  awk -v v="$value" 'BEGIN{ if (v+0 < -1000 || v+0 > 1000) exit 1 }' || {
+    echo "error: pitch must be between -1000 and 1000 Hz" >&2
+    return 2
+  }
+  _update_env YANDEX_TTS_PITCH "$value" && echo "yandex pitch: $value Hz ($RELOAD_NOTE)"
 }
 
 # The key only works against the Yandex Cloud installation that issued it: Russia
@@ -849,6 +866,7 @@ _default_for_key() {
     YANDEX_TTS_ROLE)  echo "(voice default)" ;;
     YANDEX_TTS_SPEED) echo "1.0" ;;
     YANDEX_TTS_REGION) echo "ru" ;;
+    YANDEX_TTS_PITCH) echo "0" ;;
     *)                echo "" ;;
   esac
 }
@@ -859,14 +877,14 @@ cmd_config() {
     return 1
   fi
   echo "Config from $PLIST"
-  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed|google-voice|google-speed|yandex-voice|yandex-speed|yandex-region' or PlistBuddy + 'tts restart')"
+  echo "(edit with 'tts provider|voice|rate|pitch|openai-voice|openai-model|speed|google-voice|google-speed|yandex-voice|yandex-speed|yandex-pitch|yandex-region' or PlistBuddy + 'tts restart')"
   echo
   local keys=(
     TTS_PROVIDER
     TTS_VOICE TTS_RATE TTS_PITCH
     OPENAI_TTS_MODEL OPENAI_TTS_VOICE OPENAI_TTS_SPEED OPENAI_TTS_INSTRUCTIONS
     GOOGLE_TTS_VOICE GOOGLE_TTS_SPEED GOOGLE_TTS_MONTHLY_CHAR_LIMIT GOOGLE_TTS_USAGE_FILE
-    YANDEX_TTS_REGION YANDEX_TTS_VOICE YANDEX_TTS_ROLE YANDEX_TTS_SPEED
+    YANDEX_TTS_REGION YANDEX_TTS_VOICE YANDEX_TTS_ROLE YANDEX_TTS_SPEED YANDEX_TTS_PITCH
     TTS_TLDR_ONLY TTS_TLDR_FALLBACK_TEXT
     TTS_MAX_CHARS TTS_PORT TTS_LOCK_FILE TTS_RESPECT_LOCK PYTHONPATH
   )
@@ -1127,6 +1145,13 @@ cmd_doctor() {
   else
     _yandex_problem "yandex speed '$y_speed' outside 0.1-3.0 (server clamps it) — run: tts yandex-speed"
   fi
+  local y_pitch
+  y_pitch=$(_openai_get_plist_value YANDEX_TTS_PITCH "0")
+  if awk -v v="$y_pitch" 'BEGIN{ exit !(v+0 >= -1000 && v+0 <= 1000) }'; then
+    _ok "yandex pitch: $y_pitch Hz (-1000..1000)"
+  else
+    _yandex_problem "yandex pitch '$y_pitch' outside -1000..1000 Hz (server clamps it) — run: tts yandex-pitch"
+  fi
 
   echo
   echo "== launchd plist =="
@@ -1264,6 +1289,7 @@ COMMANDS=(
   yandex-voice     "<name> [role]  [yandex] Switch voice + role (e.g. masha friendly) and restart"
   yandex-voices    "[yandex]  List Yandex voices and their roles"
   yandex-speed     "<val>   [yandex] Set speech speed 0.1–3.0 (e.g. 1.1) and restart"
+  yandex-pitch     "<Hz>    [yandex] Shift pitch -1000..1000 Hz (e.g. -100, +50; 0 = natural) and restart"
   yandex-region    "<ru|kz>  [yandex] Yandex Cloud installation that issued the key and restart"
   tldr             "<on|off>  Speak only TL;DR block (silent if absent). Default: on"
   tldr-fallback        "<text>  Phrase spoken when TL;DR is missing (overrides silent-skip)"

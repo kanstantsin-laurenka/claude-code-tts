@@ -72,11 +72,23 @@ echo "plistbuddy $*" >> "$FAKE_STATE/calls"
 exit 0
 """
 
-# Keeps keyed commands (`tts provider yandex`, …) away from the real Keychain on macOS:
-# every lookup reports "item not found" (exit 44, like the real `security`).
+# Keeps keyed commands (`tts provider yandex`, …) away from the real Keychain on macOS.
+# A lookup succeeds only if the test wrote $FAKE_STATE/key-<account>; otherwise it
+# reports "item not found" (exit 44, like the real `security`).
 FAKE_SECURITY = """#!/bin/bash
 echo "security $1" >> "$FAKE_STATE/calls"
-exit 44
+account=""; print_secret=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -a) account="$2"; shift ;;
+    -w) print_secret=1 ;;
+  esac
+  shift
+done
+f="$FAKE_STATE/key-$account"
+[ -f "$f" ] || exit 44
+[ "$print_secret" = 1 ] && cat "$f"
+exit 0
 """
 
 
@@ -369,3 +381,53 @@ def test_yandex_region_rejects_unknown(env: Env) -> None:
     assert result.returncode == 2
     assert "region must be 'ru'" in result.stderr
     assert plist_writes(env) == []
+
+
+@pytest.mark.parametrize("value", ["+50", "-150", "0", "1000", "-1000"])
+def test_yandex_pitch_accepts_signed_hz(env: Env, value: str) -> None:
+    result = env.tts("yandex-pitch", value)
+
+    assert result.returncode == 0, result.stderr
+    assert any(f"YANDEX_TTS_PITCH {value}" in c for c in plist_writes(env))
+
+
+@pytest.mark.parametrize("value", ["1001", "-2000", "50Hz", "high", "1.5"])
+def test_yandex_pitch_rejects_invalid(env: Env, value: str) -> None:
+    result = env.tts("yandex-pitch", value)
+
+    assert result.returncode == 2
+    assert plist_writes(env) == []
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "AQVN" + "a" * 36,
+        # Real key prefix reported by a user; Yandex does not document the format.
+        "AQWJ" + "b" * 36,
+    ],
+)
+def test_yandex_key_shape_accepts_real_api_keys(env: Env, key: str) -> None:
+    (env.state / "key-yandex").write_text(key + "\n")
+
+    result = env.tts("provider", "yandex")
+
+    assert result.returncode == 0, result.stderr
+    assert "Yandex" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("key", "hint"),
+    [
+        ("t1." + "x" * 200, "IAM token"),
+        ("short", "30-80 chars"),
+        ("AQWJ" + "b" * 18 + " " + "b" * 18, "no spaces"),
+    ],
+)
+def test_yandex_key_shape_flags_common_mistakes(env: Env, key: str, hint: str) -> None:
+    (env.state / "key-yandex").write_text(key + "\n")
+
+    result = env.tts("provider", "yandex")
+
+    assert "stored Yandex key looks malformed" in result.stderr
+    assert hint in result.stderr

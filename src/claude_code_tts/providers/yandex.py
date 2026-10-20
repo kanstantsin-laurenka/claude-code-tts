@@ -20,7 +20,8 @@ Business rules:
     are concatenated in order. An {"error": …} object can arrive mid-stream after a 200,
     so the status code alone is not proof of success.
   - Empty role = the voice's default role; the hint is omitted, never sent empty.
-  - speed is clamped to SpeechKit's 0.1–3.0 range.
+  - speed is clamped to SpeechKit's 0.1–3.0 range; pitch (pitchShift, Hz) to −1000…1000.
+    A zero pitch is omitted so requests stay identical to SpeechKit's own default.
   - The key never appears in error messages or describe().
   - ProviderError.billed is False only for failures that provably never reached billing
     (connect errors, 4xx); everything else stays "possibly billed".
@@ -45,6 +46,8 @@ REGION_URLS = {
 DEFAULT_REGION = "ru"
 SPEED_MIN = 0.1
 SPEED_MAX = 3.0
+PITCH_MIN = -1000.0
+PITCH_MAX = 1000.0
 
 # Failures raised before the request body could reach Yandex, so nothing was billed.
 # Read/write timeouts are excluded on purpose: the request may already be processing.
@@ -78,6 +81,7 @@ class YandexTTSProvider(TTSProvider):
         speed: float,
         api_key: str | None,
         region: str = DEFAULT_REGION,
+        pitch: float = 0.0,
     ) -> None:
         if region not in REGION_URLS:
             print(
@@ -98,6 +102,15 @@ class YandexTTSProvider(TTSProvider):
                 flush=True,
             )
         self.speed = clamped
+        clamped_pitch = max(PITCH_MIN, min(PITCH_MAX, pitch))
+        if clamped_pitch != pitch:
+            print(
+                f"[tts] YANDEX_TTS_PITCH={pitch} out of [{PITCH_MIN}, {PITCH_MAX}], "
+                f"clamped to {clamped_pitch}",
+                file=sys.stderr,
+                flush=True,
+            )
+        self.pitch = clamped_pitch
         self._api_key = api_key or None
 
     async def synthesize(self, text: str, out_path: str) -> None:
@@ -110,6 +123,8 @@ class YandexTTSProvider(TTSProvider):
         if self.role:
             hints.append({"role": self.role})
         hints.append({"speed": self.speed})
+        if self.pitch:
+            hints.append({"pitchShift": self.pitch})
         body = {
             "text": text,
             "hints": hints,
@@ -169,5 +184,6 @@ class YandexTTSProvider(TTSProvider):
             "voice": self.voice,
             "role": self.role,
             "speed": self.speed,
+            "pitch": self.pitch,
             "key_loaded": self._api_key is not None,
         }

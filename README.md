@@ -58,6 +58,7 @@ tts yandex-key-clear  Remove the Yandex API key
 tts yandex-voice <name> [role]  Set Yandex voice and role (e.g. masha friendly)
 tts yandex-voices   List Yandex voices and their roles
 tts yandex-speed <val>   Set Yandex speed (0.1–3.0)
+tts yandex-pitch <Hz>    Shift Yandex pitch (-1000..1000 Hz, 0 = natural)
 tts yandex-region <ru|kz>  Yandex Cloud installation that issued the key
 tts tldr <on|off>   Speak only TL;DR block, silent if absent (default: on)
 tts reset           Restore voice/rate/pitch to defaults (single restart)
@@ -95,6 +96,7 @@ All runtime parameters come from environment variables set in the launchd plist.
 | `YANDEX_TTS_VOICE` | `masha` | Yandex SpeechKit voice |
 | `YANDEX_TTS_ROLE` | (unset) | Voice role (`good`, `friendly`, …); unset = the voice's default |
 | `YANDEX_TTS_SPEED` | `1.0` | Yandex speed, 0.1–3.0 |
+| `YANDEX_TTS_PITCH` | `0` | Yandex pitch shift in Hz, −1000…1000 |
 | `YANDEX_TTS_REGION` | `ru` | `ru` (console.yandex.cloud) or `kz` (kz.console.yandex.cloud) |
 | `TTS_MAX_CHARS` | `1500` | Truncate long responses before synthesis |
 | `TTS_PORT` | `7852` | Local HTTP server port |
