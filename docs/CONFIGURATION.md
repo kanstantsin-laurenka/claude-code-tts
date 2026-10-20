@@ -34,6 +34,26 @@ tts provider yandex      # Yandex SpeechKit v3 (requires: tts yandex-key)
 
 Defaults: `ru-RU-SvetlanaNeural`, `+0%`, `+0Hz`.
 
+### edge-tts outages
+
+edge-tts talks to an unofficial Microsoft endpoint. When Microsoft changes it, requests start failing until a new edge-tts release catches up. Every edge-tts failure is logged with the installed version and a cause (`tts logs`):
+
+```
+edge-tts 7.3.1 error: Microsoft rejected the request (HTTP 403): …
+edge-tts 7.3.1 error: network problem (TimeoutError): …
+edge-tts 7.3.1 error: invalid voice/rate/pitch (ValueError): …
+```
+
+Only the first kind (Microsoft rejected the request, or answered with something edge-tts did not expect) shows a macOS notification, at most once every 6 hours. The server compares the installed edge-tts with the newest on PyPI:
+
+| Notification ends with | Meaning | What to do |
+|---|---|---|
+| «Доступна версия X — выполните tts update» | a fixed edge-tts is already released | `tts update` |
+| «Новой версии edge-tts пока нет — сбой на стороне Microsoft» | no fix yet | wait; switch provider meanwhile (`tts provider …`) if needed |
+| «Проверьте обновления: tts update» | PyPI could not be reached | `tts update`, or `tts doctor` later |
+
+`tts doctor` shows the same comparison any time («edge-tts X installed, Y on PyPI»). New edge-tts releases reach `main` through Dependabot without the usual 7-day cooldown and are merged by hand (README → Dependency updates).
+
 ## openai knobs
 
 | Command | Effect | Env var |

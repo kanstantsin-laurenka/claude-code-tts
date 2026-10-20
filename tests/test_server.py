@@ -301,6 +301,23 @@ def test_unknown_provider_falls_back_to_edge(monkeypatch):
     importlib.reload(srv)
 
     assert srv.PROVIDER.name == "edge-tts"
+    assert srv.PROVIDER._alerter is not None
+
+
+def test_google_fallback_edge_shares_the_outage_alerter(monkeypatch):
+    """edge-tts as Google's fallback must diagnose outages like the default edge-tts."""
+    monkeypatch.setenv("TTS_PROVIDER", "google")
+    monkeypatch.setenv("TTS_PORT", str(_free_port()))
+
+    import claude_code_tts.keychain as keychain_mod
+
+    monkeypatch.setattr(keychain_mod, "get_google_key", lambda: "AIza-test-dummy")
+
+    import claude_code_tts.server as srv
+
+    importlib.reload(srv)
+
+    assert srv.PROVIDER._fallback._alerter is not None
 
 
 def test_invalid_speed_does_not_crash_server(monkeypatch):

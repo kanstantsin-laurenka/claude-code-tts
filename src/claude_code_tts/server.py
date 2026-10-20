@@ -54,6 +54,7 @@ from . import usage as usage_mod
 from .clean_text import clean_for_tts, extract_tldr
 from .providers import ProviderError, TTSProvider
 from .providers.edge import EdgeTTSProvider
+from .providers.edge_alert import EdgeOutageAlerter
 from .providers.google import GoogleTTSProvider
 from .providers.google_fallback import GoogleWithFallback
 from .providers.openai import OpenAIProvider
@@ -130,6 +131,9 @@ RESPECT_LOCK = os.environ.get("TTS_RESPECT_LOCK", "1") == "1"
 
 
 def _make_provider() -> TTSProvider:
+    # One alerter for every edge-tts instance (default voice and Google's fallback), so
+    # its throttle covers both. notify.send is looked up at build time so tests can patch it.
+    edge_alerter = EdgeOutageAlerter(notify_mod.send)
     if PROVIDER_NAME == "openai":
         return OpenAIProvider(
             model=OPENAI_MODEL,
@@ -141,7 +145,7 @@ def _make_provider() -> TTSProvider:
     if PROVIDER_NAME == "google":
         return GoogleWithFallback(
             GoogleTTSProvider(GOOGLE_VOICE, GOOGLE_SPEED, keychain.get_google_key()),
-            EdgeTTSProvider(voice=VOICE, rate=RATE, pitch=PITCH),
+            EdgeTTSProvider(voice=VOICE, rate=RATE, pitch=PITCH, alerter=edge_alerter),
             usage_mod.UsageCounter(GOOGLE_USAGE_FILE, GOOGLE_LIMIT),
             # Module attribute lookup at build time so tests can patch notify.send.
             notify_mod.send,
@@ -163,7 +167,7 @@ def _make_provider() -> TTSProvider:
             file=sys.stderr,
             flush=True,
         )
-    return EdgeTTSProvider(voice=VOICE, rate=RATE, pitch=PITCH)
+    return EdgeTTSProvider(voice=VOICE, rate=RATE, pitch=PITCH, alerter=edge_alerter)
 
 
 PROVIDER: TTSProvider = _make_provider()

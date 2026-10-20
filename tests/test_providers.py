@@ -6,11 +6,14 @@ to path / raises ProviderError) and the describe() shape used by /health.
 
 import asyncio
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import aiohttp
 import pytest
+from edge_tts import exceptions as edge_exceptions
 
 from claude_code_tts.providers import ProviderError
-from claude_code_tts.providers.edge import EdgeTTSProvider
+from claude_code_tts.providers.edge import EdgeTTSProvider, classify_edge_error
 from claude_code_tts.providers.openai import SPEED_MAX, SPEED_MIN, OpenAIProvider
 
 
@@ -60,6 +63,75 @@ def test_edge_wraps_errors_as_provider_error(tmp_path, monkeypatch):
     with pytest.raises(ProviderError) as ex:
         asyncio.run(p.synthesize("hi", str(tmp_path / "x.mp3")))
     assert "network down" in str(ex.value)
+
+
+def _handshake_403() -> aiohttp.WSServerHandshakeError:
+    return aiohttp.WSServerHandshakeError(
+        request_info=MagicMock(), history=(), status=403, message="Invalid response status"
+    )
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind", "detail"),
+    [
+        (_handshake_403(), "service", "HTTP 403"),
+        (edge_exceptions.NoAudioReceived("no audio"), "service", "NoAudioReceived"),
+        (aiohttp.ServerDisconnectedError(), "network", "ServerDisconnectedError"),
+        (TimeoutError(), "network", "TimeoutError"),
+        (ValueError("Invalid voice"), "config", "ValueError"),
+        (RuntimeError("boom"), "unknown", "RuntimeError"),
+    ],
+)
+def test_classify_edge_error(exc, kind, detail):
+    assert classify_edge_error(exc) == (kind, detail)
+
+
+class _FakeAlerter:
+    def __init__(self) -> None:
+        self.reports: list[tuple[str, str]] = []
+
+    def report(self, installed: str, detail: str) -> None:
+        self.reports.append((installed, detail))
+
+
+def _failing_communicate(exc: Exception):
+    class _Failing:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def save(self, path):
+            raise exc
+
+    return _Failing
+
+
+def test_edge_service_failure_alerts_and_names_version(tmp_path, monkeypatch):
+    import claude_code_tts.providers.edge as edge_mod
+
+    monkeypatch.setattr(edge_mod.edge_tts, "Communicate", _failing_communicate(_handshake_403()))
+    alerter = _FakeAlerter()
+    p = EdgeTTSProvider(voice="x", rate="+0%", pitch="+0Hz", alerter=alerter)
+
+    with pytest.raises(ProviderError) as ex:
+        asyncio.run(p.synthesize("hi", str(tmp_path / "x.mp3")))
+
+    version = edge_mod.installed_edge_version()
+    assert alerter.reports == [(version, "HTTP 403")]
+    assert f"edge-tts {version} error: Microsoft rejected the request (HTTP 403)" in str(ex.value)
+
+
+@pytest.mark.parametrize("exc", [TimeoutError(), ValueError("Invalid voice")])
+def test_edge_network_and_config_failures_do_not_alert(tmp_path, monkeypatch, exc):
+    import claude_code_tts.providers.edge as edge_mod
+
+    monkeypatch.setattr(edge_mod.edge_tts, "Communicate", _failing_communicate(exc))
+    alerter = _FakeAlerter()
+    p = EdgeTTSProvider(voice="x", rate="+0%", pitch="+0Hz", alerter=alerter)
+
+    with pytest.raises(ProviderError):
+        asyncio.run(p.synthesize("hi", str(tmp_path / "x.mp3")))
+
+    assert alerter.reports == []
 
 
 def test_openai_describe_includes_config_not_key():

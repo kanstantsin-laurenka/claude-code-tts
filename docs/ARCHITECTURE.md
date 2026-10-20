@@ -37,6 +37,8 @@ providers/google_fallback.py  GoogleWithFallback.synthesize(text)
     5. providers/google.py → Google TTS REST  (any failure → same request on edge-tts)
 ```
 
+Any edge-tts failure (default provider or Google's fallback) is classified in `providers/edge.py`; failures on Microsoft's side go to `providers/edge_alert.py`, which checks PyPI for a newer edge-tts in the background and notifies (throttled). See [CONFIGURATION.md](CONFIGURATION.md#edge-tts-outages).
+
 `usage.py` only counts (file `~/.config/claude-code-tts/google-usage.json`, thread-safe, re-read on every call); `notify.py` only runs `osascript`; all alert and fallback policy lives in the wrapper. See [CONFIGURATION.md](CONFIGURATION.md#google-knobs) for the numbers.
 
 SessionStart hook (`hooks/tts-status.sh`) runs once per Claude Code session and prints one line showing whether the server is healthy.

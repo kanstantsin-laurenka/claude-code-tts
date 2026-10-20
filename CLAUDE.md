@@ -18,7 +18,7 @@ Architecture and config details live in `@docs/ARCHITECTURE.md` and `@docs/CONFI
 
 - `bin/tts` — Bash CLI (`on`/`off`/`toggle`/`status`/`test`/`restart`/`voice`/...)
 - `src/claude_code_tts/` — Python package: `server.py`, `clean_text.py`, `keychain.py` (read-only), `usage.py`, `notify.py`
-- `src/claude_code_tts/providers/` — `edge.py`, `openai.py`, `google.py` (REST client), `google_fallback.py` (quota alerts + fallback to edge-tts), `yandex.py` (SpeechKit v3 REST, no fallback)
+- `src/claude_code_tts/providers/` — `edge.py` (+ `edge_alert.py`: classified failures, throttled outage notification with a PyPI version check), `openai.py`, `google.py` (REST client), `google_fallback.py` (quota alerts + fallback to edge-tts), `yandex.py` (SpeechKit v3 REST, no fallback)
 - Google monthly quota (Pacific month, 990k limit, sticky switch to edge-tts): see `docs/CONFIGURATION.md#google-knobs`. All policy lives in `google_fallback.py`, not in `google.py` or `usage.py`.
 - `hooks/` — Bash hooks registered in `~/.claude/settings.json` (`tts-stop.sh`, `tts-status.sh`)
 - `scripts/patch_settings.py` — idempotent editor for `~/.claude/settings.json`
