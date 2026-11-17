@@ -142,6 +142,10 @@ Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes updates
 
 Merged updates reach an installed copy on the next `tts update`.
 
+## License
+
+[MIT](LICENSE). Note that the `edge-tts` dependency is licensed separately (LGPL-3.0).
+
 ## Status
 
 Personal tool, happy to accept issues.
